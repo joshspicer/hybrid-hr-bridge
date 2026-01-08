@@ -394,6 +394,9 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Hybrid HR Bridge needs Bluetooth to communicate with your Fossil/Skagen watch.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Hybrid HR Bridge needs Bluetooth to communicate with your Fossil/Skagen watch.";
+				INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -436,6 +439,9 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Hybrid HR Bridge needs Bluetooth to communicate with your Fossil/Skagen watch.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Hybrid HR Bridge needs Bluetooth to communicate with your Fossil/Skagen watch.";
+				INFOPLIST_KEY_UIBackgroundModes = "bluetooth-central";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
