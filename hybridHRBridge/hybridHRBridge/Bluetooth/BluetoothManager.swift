@@ -64,17 +64,12 @@ final class BluetoothManager: NSObject, ObservableObject {
         super.init()
         // Use nil queue to run on the main queue, which is required since this class is @MainActor
         // This prevents crashes on iOS 18+ where actor isolation is more strictly enforced
-        // Enable state restoration for background operation
-        let options: [String: Any] = [
-            CBCentralManagerOptionRestoreIdentifierKey: "com.hybridhrbridge.central",
-            CBCentralManagerOptionShowPowerAlertKey: true
-        ]
-        centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
+        centralManager = CBCentralManager(delegate: self, queue: nil)
 
         // Log initialization after the actor context is established
         Task { @MainActor in
-            logger.info("BLE", "BluetoothManager initialized with state restoration")
-            logger.debug("BLE", "CBCentralManager created with restore identifier: com.hybridhrbridge.central")
+            logger.info("BLE", "BluetoothManager initialized")
+            logger.debug("BLE", "CBCentralManager created with main queue")
         }
     }
     
@@ -304,26 +299,6 @@ extension BluetoothManager: CBCentralManagerDelegate {
             connectionState = .disconnected
             characteristicUpdateHandlers.removeAll()
             logger.debug("BLE", "Cleared \(characteristicUpdateHandlers.count) notification handlers")
-        }
-    }
-    
-    nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        // Handle state restoration for background operation
-        Task { @MainActor in
-            logger.info("BLE", "Restoring Bluetooth state for background operation")
-            logger.debug("BLE", "Restore state dictionary keys: \(dict.keys)")
-
-            if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
-                logger.info("BLE", "Restoring \(peripherals.count) peripheral(s)")
-                for peripheral in peripherals {
-                    logger.info("BLE", "Restored peripheral: \(peripheral.name ?? "Unknown") (ID: \(peripheral.identifier))")
-                    peripheral.delegate = self
-                }
-            }
-
-            if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
-                logger.debug("BLE", "Was scanning for services: \(scanServices.map { $0.uuidString })")
-            }
         }
     }
 }
