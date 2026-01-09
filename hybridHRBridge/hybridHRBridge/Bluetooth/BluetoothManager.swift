@@ -57,14 +57,13 @@ final class BluetoothManager: NSObject, ObservableObject {
     private var characteristicUpdateHandlers: [CBUUID: (Data) -> Void] = [:]
     private var writeCompletionHandler: ((Error?) -> Void)?
     
-    // Queue for Bluetooth operations
-    private let bluetoothQueue = DispatchQueue(label: "com.hybridhrbridge.bluetooth", qos: .userInitiated)
-    
     // MARK: - Initialization
-    
+
     override init() {
         super.init()
-        centralManager = CBCentralManager(delegate: self, queue: bluetoothQueue, options: [
+        // Use nil queue to run on the main queue, which is required since this class is @MainActor
+        // This prevents crashes on iOS 18+ where actor isolation is more strictly enforced
+        centralManager = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "com.hybridhrbridge.central"
         ])
     }
