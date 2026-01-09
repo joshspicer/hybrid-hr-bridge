@@ -243,6 +243,11 @@ final class AuthenticationManager: ObservableObject {
             let encrypted = try AESCrypto.encryptCBC(data: swapped, key: key)
             logger.debug("Auth", "Re-encrypted response: \(encrypted.hexString)")
 
+            // Verify encryption by decrypting again
+            let verifyDecrypt = try AESCrypto.decryptCBC(data: encrypted, key: key)
+            logger.debug("Auth", "Verification decrypt: \(verifyDecrypt.hexString)")
+            logger.debug("Auth", "Should match swapped: \(swapped.hexString)")
+
             // Source: VerifyPrivateKeyRequest.java#L88-L92
             // Build response: payload[0]=2, payload[1]=2, payload[2]=1, payload[3-18]=encrypted
             var response = Data(capacity: 19)
