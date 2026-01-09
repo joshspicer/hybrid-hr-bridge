@@ -148,7 +148,7 @@ struct DebugView: View {
             // Logs Section
             Section("Debug Logs") {
                 LabeledContent("Total Entries") {
-                    Text("\(logManager.getAllLogs().count)")
+                    Text("\(logManager.logEntries.count)")
                         .font(.system(.body, design: .monospaced))
                 }
 
@@ -210,7 +210,9 @@ struct DebugView: View {
     }
 
     private var bluetoothStateText: String {
-        switch watchManager.bluetoothManager.centralManager?.state {
+        let state = watchManager.bluetoothManager.centralManager.state
+
+        switch state {
         case .poweredOn:
             return "Powered On"
         case .poweredOff:
@@ -223,17 +225,13 @@ struct DebugView: View {
             return "Unsupported"
         case .unknown:
             return "Unknown"
-        case nil:
-            return "Not Ready"
         @unknown default:
             return "Unknown"
         }
     }
 
     private var bluetoothStateColor: Color {
-        guard let state = watchManager.bluetoothManager.centralManager?.state else {
-            return .gray
-        }
+        let state = watchManager.bluetoothManager.centralManager.state
 
         switch state {
         case .poweredOn:
