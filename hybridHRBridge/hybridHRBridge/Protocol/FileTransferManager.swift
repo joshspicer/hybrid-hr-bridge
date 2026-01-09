@@ -30,13 +30,14 @@ final class FileTransferManager: ObservableObject {
     
     private let bluetoothManager: BluetoothManager
     private let authManager: AuthenticationManager
-    
+    private let logger = LogManager.shared
+
     private var transferState: TransferState = .idle
     private var currentData: Data?
     private var currentHandle: FileHandle?
     private var bytesSent: Int = 0
     private var transferContinuation: CheckedContinuation<Void, Error>?
-    
+
     // MTU for data packets (iOS typically negotiates 185-517)
     // Leave room for BLE overhead
     private var mtuSize: Int = 180
@@ -121,26 +122,57 @@ final class FileTransferManager: ObservableObject {
         message: String,
         appIdentifier: String
     ) async throws {
+        let messageID = UInt32.random(in: 0...UInt32.max)
+        let packageCRC = appIdentifier.crc32
+
+        logger.info("Notification", "Sending notification to watch")
+        logger.debug("Notification", "Type: \(type), ID: \(messageID)")
+        logger.debug("Notification", "Title: '\(title)'")
+        logger.debug("Notification", "Sender: '\(sender)'")
+        logger.debug("Notification", "Message: '\(message.prefix(100))\(message.count > 100 ? "..." : "")'")
+        logger.debug("Notification", "App: \(appIdentifier), CRC32: 0x\(String(format: "%08X", packageCRC))")
+
         let payload = RequestBuilder.buildNotification(
             type: type,
             title: title,
             sender: sender,
             message: message,
-            packageCRC: appIdentifier.crc32,
-            messageID: UInt32.random(in: 0...UInt32.max)
+            packageCRC: packageCRC,
+            messageID: messageID
         )
-        
+
+        logger.debug("Notification", "Payload size: \(payload.count) bytes")
+        logger.debug("Notification", "Payload data: \(payload.prefix(20).hexString)...")
+
         try await putFile(payload, to: .notificationPlay)
+
+        logger.info("Notification", "✅ Notification sent successfully (ID: \(messageID))")
     }
     
     /// Sync time to the watch
     func syncTime(date: Date = Date(), timeZone: TimeZone = .current) async throws {
+        logger.info("TimeSync", "Starting time synchronization")
+
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .long
+        formatter.timeZone = timeZone
+
+        let unixTime = Int(date.timeIntervalSince1970)
+        let offsetMinutes = timeZone.secondsFromGMT(for: date) / 60
+
+        logger.debug("TimeSync", "Date: \(formatter.string(from: date))")
+        logger.debug("TimeSync", "Unix timestamp: \(unixTime)")
+        logger.debug("TimeSync", "Timezone: \(timeZone.identifier)")
+        logger.debug("TimeSync", "Timezone offset: \(offsetMinutes) minutes (\(offsetMinutes / 60)h \(abs(offsetMinutes % 60))m)")
+
         let configData = RequestBuilder.buildTimeSyncRequest(date: date, timeZone: timeZone)
-        
+        logger.debug("TimeSync", "Config data: \(configData.hexString)")
+
         // Time sync uses the configuration file handle
         try await putFile(configData, to: .configuration)
-        
-        print("[FileTransfer] Time synced to \(date)")
+
+        logger.info("TimeSync", "✅ Time synced successfully to \(formatter.string(from: date))")
     }
     
     /// Install a watch app (.wapp file)

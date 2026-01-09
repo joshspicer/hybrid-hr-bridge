@@ -84,6 +84,7 @@ final class WatchManager: ObservableObject {
     /// Disconnect from the current device
     func disconnect() {
         bluetoothManager.disconnect()
+        authManager.resetAuthState()
         connectionStatus = .disconnected
         connectedWatch = nil
     }
@@ -245,6 +246,8 @@ final class WatchManager: ObservableObject {
         switch state {
         case .disconnected:
             connectionStatus = .disconnected
+            // Reset auth state on disconnect so we re-auth on next connection
+            authManager.resetAuthState()
         case .scanning:
             connectionStatus = .scanning
         case .connecting:
@@ -252,18 +255,29 @@ final class WatchManager: ObservableObject {
         case .discovering, .authenticating:
             connectionStatus = .authenticating
         case .connected:
-            // Start authentication automatically
+            // Automatically start authentication when device is connected
+            // and we have a secret key available
+            connectionStatus = .authenticating
             Task {
                 do {
+                    guard let watch = connectedWatch, watch.secretKey != nil else {
+                        print("[WatchManager] Connected but no secret key available")
+                        connectionStatus = .connected
+                        return
+                    }
+
+                    print("[WatchManager] Starting automatic authentication...")
                     try await authenticate()
+                    print("[WatchManager] Auto-authentication successful!")
                 } catch {
-                    print("[WatchManager] Auto-auth failed: \(error)")
-                    // Still connected, just not authenticated
+                    print("[WatchManager] Auto-auth failed: \(error.localizedDescription)")
+                    // Stay connected even if auth fails - user can retry manually
                     connectionStatus = .connected
                 }
             }
         case .disconnecting:
             connectionStatus = .disconnected
+            authManager.resetAuthState()
         }
     }
     

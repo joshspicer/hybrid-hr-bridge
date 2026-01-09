@@ -132,7 +132,17 @@ final class AuthenticationManager: ObservableObject {
     func getWatchRandomNumber() -> Data? {
         watchRandomNumber
     }
-    
+
+    /// Reset authentication state (called on disconnect)
+    func resetAuthState() {
+        isAuthenticated = false
+        authState = .idle
+        phoneRandomNumber = nil
+        watchRandomNumber = nil
+        lastError = nil
+        logger.debug("Auth", "Authentication state reset")
+    }
+
     // MARK: - Private Methods
     
     /// Build the authentication start sequence
