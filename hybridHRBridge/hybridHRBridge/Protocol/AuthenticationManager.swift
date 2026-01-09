@@ -243,6 +243,11 @@ final class AuthenticationManager: ObservableObject {
             let encrypted = try AESCrypto.encryptCBC(data: swapped, key: key)
             logger.debug("Auth", "Re-encrypted response: \(encrypted.hexString)")
 
+            // Verify encryption by decrypting again
+            let verifyDecrypt = try AESCrypto.decryptCBC(data: encrypted, key: key)
+            logger.debug("Auth", "Verification decrypt: \(verifyDecrypt.hexString)")
+            logger.debug("Auth", "Should match swapped: \(swapped.hexString)")
+
             // Source: VerifyPrivateKeyRequest.java#L88-L92
             // Build response: payload[0]=2, payload[1]=2, payload[2]=1, payload[3-18]=encrypted
             var response = Data(capacity: 19)
@@ -300,6 +305,11 @@ final class AuthenticationManager: ObservableObject {
             logger.error("Auth", "❌ Authentication rejected by watch")
             logger.error("Auth", "Status code: 0x\(String(format: "%02X", status))")
             logger.error("Auth", "Full response: \(data.hexString)")
+            logger.error("Auth", "")
+            logger.error("Auth", "Common causes of authentication rejection:")
+            logger.error("Auth", "1. Incorrect secret key - verify the key matches this specific watch")
+            logger.error("Auth", "2. Watch was previously paired with different phone - may need factory reset")
+            logger.error("Auth", "3. Key from Gadgetbridge database may be for wrong device")
             failAuth(with: .rejected)
         }
     }
