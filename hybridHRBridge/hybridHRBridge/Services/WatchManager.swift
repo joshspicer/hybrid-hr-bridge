@@ -285,6 +285,10 @@ final class WatchManager: ObservableObject {
     private func saveSavedDevices() {
         if let data = try? JSONEncoder().encode(savedDevices) {
             userDefaults.set(data, forKey: devicesKey)
+            userDefaults.synchronize()  // Force immediate save
+            print("[WatchManager] Saved \(savedDevices.count) devices to UserDefaults")
+        } else {
+            print("[WatchManager] Failed to encode devices for saving")
         }
     }
 }
