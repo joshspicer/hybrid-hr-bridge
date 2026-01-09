@@ -1,4 +1,6 @@
 import Foundation
+import Combine
+import UIKit
 import os.log
 
 /// Centralized logging manager with file export capability

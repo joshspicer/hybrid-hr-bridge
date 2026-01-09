@@ -305,21 +305,21 @@ extension BluetoothManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         // Handle state restoration for background operation
-        logger.info("BLE", "Restoring Bluetooth state for background operation")
-        logger.debug("BLE", "Restore state dictionary keys: \(dict.keys)")
+        Task { @MainActor in
+            logger.info("BLE", "Restoring Bluetooth state for background operation")
+            logger.debug("BLE", "Restore state dictionary keys: \(dict.keys)")
 
-        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
-            Task { @MainActor in
+            if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
                 logger.info("BLE", "Restoring \(peripherals.count) peripheral(s)")
                 for peripheral in peripherals {
                     logger.info("BLE", "Restored peripheral: \(peripheral.name ?? "Unknown") (ID: \(peripheral.identifier))")
                     peripheral.delegate = self
                 }
             }
-        }
 
-        if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
-            logger.debug("BLE", "Was scanning for services: \(scanServices.map { $0.uuidString })")
+            if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
+                logger.debug("BLE", "Was scanning for services: \(scanServices.map { $0.uuidString })")
+            }
         }
     }
 }
