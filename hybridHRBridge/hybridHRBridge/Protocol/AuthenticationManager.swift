@@ -305,6 +305,11 @@ final class AuthenticationManager: ObservableObject {
             logger.error("Auth", "❌ Authentication rejected by watch")
             logger.error("Auth", "Status code: 0x\(String(format: "%02X", status))")
             logger.error("Auth", "Full response: \(data.hexString)")
+            logger.error("Auth", "")
+            logger.error("Auth", "Common causes of authentication rejection:")
+            logger.error("Auth", "1. Incorrect secret key - verify the key matches this specific watch")
+            logger.error("Auth", "2. Watch was previously paired with different phone - may need factory reset")
+            logger.error("Auth", "3. Key from Gadgetbridge database may be for wrong device")
             failAuth(with: .rejected)
         }
     }
