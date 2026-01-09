@@ -63,9 +63,7 @@ final class BluetoothManager: NSObject, ObservableObject {
         super.init()
         // Use nil queue to run on the main queue, which is required since this class is @MainActor
         // This prevents crashes on iOS 18+ where actor isolation is more strictly enforced
-        centralManager = CBCentralManager(delegate: self, queue: nil, options: [
-            CBCentralManagerOptionRestoreIdentifierKey: "com.hybridhrbridge.central"
-        ])
+        centralManager = CBCentralManager(delegate: self, queue: nil)
     }
     
     // MARK: - Public API
