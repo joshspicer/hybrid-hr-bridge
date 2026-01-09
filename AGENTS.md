@@ -4,7 +4,7 @@ Rules and guidelines for AI agents working on this repository.
 
 ## Project Overview
 
-This is an iOS app (SwiftUI) that communicates with Fossil/Skagen Hybrid HR watches over Bluetooth Low Energy. It replicates functionality from the discontinued official Fossil app using the reverse-engineered protocol from [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge).
+This is an iOS app (SwiftUI) that communicates with Fossil/Skagen Hybrid HR watches over Bluetooth Low Energy. It replicates functionality from the discontinued official Fossil app using the reverse-engineered protocol from [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) and other sources.
 
 ## Architecture
 
@@ -51,10 +51,15 @@ hybridHRBridge/
 
 ## External References
 
+ALWAYS CROSS  REFERENCES WITH A RELIABLE PRIMARY SOURCE BEFORE ANY CHANGE!
+
 - **Gadgetbridge Source**: https://codeberg.org/Freeyourgadget/Gadgetbridge
   - Local clone at `/Users/jospicer/dev/Gadgetbridge` or `/Users/josh/git/Gadgetbridge`
   - Key path: `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/`
 - **Fossil HR SDK**: https://github.com/dakhnod/Fossil-HR-SDK (for building custom watch apps)
+- **Apple Docs**: Use the `apple-developer-docs-mcp` to fetch iOS specific information (eg: bluetooth classes, etc.)
+
+Search on the internet for a reliable source whenever unsure.  This is NOT the kind of project to guess or make up values! The data (eg: bluetooth characteristics) MUST be precise and grounded in a primary source. Add comments referring to this sources whenever used to help later.
 
 ## Build & Run
 
