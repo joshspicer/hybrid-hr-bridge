@@ -157,19 +157,25 @@ final class AuthenticationManager: ObservableObject {
             return
         }
 
-        let responseType = data[0]
-        let subType = data[1]
+        let byte0 = data[0]
+        let byte1 = data[1]
+        let byte2 = data.count >= 3 ? data[2] : 0
+        let byte3 = data.count >= 4 ? data[3] : 0
 
-        logger.info("Auth", "Response type: 0x\(String(format: "%02X", responseType)), subType: 0x\(String(format: "%02X", subType))")
+        logger.info("Auth", "Response bytes: [0]=0x\(String(format: "%02X", byte0)), [1]=0x\(String(format: "%02X", byte1)), [2]=0x\(String(format: "%02X", byte2)), [3]=0x\(String(format: "%02X", byte3))")
 
-        // Check for encrypted challenge (response type 2, subtype 1)
-        if responseType == 0x02 && subType == 0x01 && data.count >= 18 {
-            logger.info("Auth", "Received encrypted challenge from watch")
+        // Source: VerifyPrivateKeyRequest.java#L63
+        // Gadgetbridge checks value[1] == 1 for encrypted challenge
+        // and value[1] == 2 for authentication result
+
+        // Check for encrypted challenge (byte[1] == 1)
+        if byte1 == 0x01 && data.count >= 20 {
+            logger.info("Auth", "Received encrypted challenge from watch (byte[1]=0x01)")
             handleChallenge(data)
         }
-        // Check for auth result (response type 2, subtype 2 or 3)
-        else if responseType == 0x02 && (subType == 0x02 || subType == 0x03) {
-            logger.info("Auth", "Received authentication result from watch")
+        // Check for auth result (byte[1] == 2)
+        else if byte1 == 0x02 {
+            logger.info("Auth", "Received authentication result from watch (byte[1]=0x02)")
             handleAuthResult(data)
         }
         else {
@@ -190,9 +196,16 @@ final class AuthenticationManager: ObservableObject {
 
         authState = .verifying
 
-        // Extract 16 encrypted bytes (starting at byte 2)
-        let encryptedChallenge = data.subdata(in: 2..<18)
-        logger.debug("Auth", "Encrypted challenge: \(encryptedChallenge.hexString)")
+        // Source: VerifyPrivateKeyRequest.java#L65
+        // Extract 16 encrypted bytes starting at position 4 (not position 2!)
+        guard data.count >= 20 else {
+            logger.error("Auth", "Response too short for encrypted challenge: \(data.count) bytes")
+            failAuth(with: .invalidResponse)
+            return
+        }
+
+        let encryptedChallenge = data.subdata(in: 4..<20)
+        logger.debug("Auth", "Encrypted challenge (from byte 4): \(encryptedChallenge.hexString)")
 
         do {
             // Decrypt the challenge
@@ -216,9 +229,11 @@ final class AuthenticationManager: ObservableObject {
                 return
             }
 
-            logger.info("Auth", "Phone random verification successful")
+            logger.info("Auth", "✅ Phone random verification successful")
 
-            // Swap halves: first 8 bytes ↔ last 8 bytes
+            // Source: VerifyPrivateKeyRequest.java#L76-L77
+            // Swap halves: result[0-7] goes to bytesToEncrypt[8-15]
+            //             result[8-15] goes to bytesToEncrypt[0-7]
             var swapped = Data(count: 16)
             swapped.replaceSubrange(0..<8, with: decrypted.subdata(in: 8..<16))
             swapped.replaceSubrange(8..<16, with: decrypted.subdata(in: 0..<8))
@@ -228,7 +243,8 @@ final class AuthenticationManager: ObservableObject {
             let encrypted = try AESCrypto.encryptCBC(data: swapped, key: key)
             logger.debug("Auth", "Re-encrypted response: \(encrypted.hexString)")
 
-            // Build response
+            // Source: VerifyPrivateKeyRequest.java#L88-L92
+            // Build response: payload[0]=2, payload[1]=2, payload[2]=1, payload[3-18]=encrypted
             var response = Data(capacity: 19)
             response.append(0x02)  // Response type
             response.append(0x02)  // Auth response
@@ -245,7 +261,7 @@ final class AuthenticationManager: ObservableObject {
                         data: response,
                         to: FossilConstants.characteristicAuthentication
                     )
-                    self.logger.info("Auth", "Authentication response sent successfully")
+                    self.logger.info("Auth", "✅ Authentication response sent successfully")
                 } catch {
                     self.logger.error("Auth", "Failed to send response: \(error.localizedDescription)")
                     failAuth(with: .writeFailed(error))
