@@ -62,7 +62,6 @@ final class BluetoothManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        logger.info("BLE", "Initializing BluetoothManager with state restoration")
         // Use nil queue to run on the main queue, which is required since this class is @MainActor
         // This prevents crashes on iOS 18+ where actor isolation is more strictly enforced
         // Enable state restoration for background operation
@@ -71,7 +70,12 @@ final class BluetoothManager: NSObject, ObservableObject {
             CBCentralManagerOptionShowPowerAlertKey: true
         ]
         centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
-        logger.debug("BLE", "CBCentralManager created with state restoration enabled")
+
+        // Log initialization after the actor context is established
+        Task { @MainActor in
+            logger.info("BLE", "BluetoothManager initialized with state restoration")
+            logger.debug("BLE", "CBCentralManager created with restore identifier: com.hybridhrbridge.central")
+        }
     }
     
     // MARK: - Public API
