@@ -113,6 +113,18 @@ Byte 2:     0x01 (status)
 Bytes 3-18: 16 encrypted bytes (swapped and re-encrypted)
 ```
 
+#### Step 5: Watch → Phone (Authentication Result)
+
+**Source:** [VerifyPrivateKeyRequest.java#L106-L110](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil_hr/authentication/VerifyPrivateKeyRequest.java#L106-L110)
+
+```
+Byte 0:     0x03 (response type)
+Byte 1:     0x02 (auth result)
+Byte 2:     Status code (0x00 = SUCCESS, other values indicate failure)
+```
+
+**Important:** Status code `0x00` indicates successful authentication. Any other value means authentication was rejected.
+
 ### Secret Key Storage
 
 **Source:** [FossilHRWatchAdapter.java#L1621-L1640](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/adapter/fossil_hr/FossilHRWatchAdapter.java#L1621-L1640)

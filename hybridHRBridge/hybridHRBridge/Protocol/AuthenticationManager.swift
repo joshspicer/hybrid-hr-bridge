@@ -132,7 +132,17 @@ final class AuthenticationManager: ObservableObject {
     func getWatchRandomNumber() -> Data? {
         watchRandomNumber
     }
-    
+
+    /// Reset authentication state (called on disconnect)
+    func resetAuthState() {
+        isAuthenticated = false
+        authState = .idle
+        phoneRandomNumber = nil
+        watchRandomNumber = nil
+        lastError = nil
+        logger.debug("Auth", "Authentication state reset")
+    }
+
     // MARK: - Private Methods
     
     /// Build the authentication start sequence
@@ -292,7 +302,9 @@ final class AuthenticationManager: ObservableObject {
         let status = data[2]
         logger.debug("Auth", "Result status byte: 0x\(String(format: "%02X", status))")
 
-        if status == 0x01 {
+        // Source: VerifyPrivateKeyRequest.java#L106-L110
+        // ResultCode.fromCode(value[2]) - status 0x00 means SUCCESS
+        if status == 0x00 {
             // Success
             logger.info("Auth", "✅ Authentication successful!")
             logger.info("Auth", "Watch authenticated and ready for communication")

@@ -162,6 +162,15 @@ struct DeviceListView: View {
                         Image(systemName: watchManager.bluetoothManager.isScanning ? "stop.fill" : "magnifyingglass")
                     }
                 }
+
+                ToolbarItem(placement: .navigation) {
+                    NavigationLink {
+                        DebugView()
+                            .environmentObject(watchManager)
+                    } label: {
+                        Image(systemName: "ant.circle")
+                    }
+                }
             }
             .sheet(isPresented: $showingKeyInput) {
                 SecretKeyInputView(
@@ -191,7 +200,18 @@ struct SecretKeyInputView: View {
     @Binding var isPresented: Bool
     @EnvironmentObject var watchManager: WatchManager
     @State private var errorMessage: String?
-    
+
+    private var cleanedKey: String {
+        keyInput
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "0x", with: "")
+            .replacingOccurrences(of: "0X", with: "")
+    }
+
+    private var isValidKey: Bool {
+        cleanedKey.count == 32 && cleanedKey.allSatisfy { $0.isHexDigit }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -203,16 +223,23 @@ struct SecretKeyInputView: View {
                 } header: {
                     Text("Device Secret Key")
                 } footer: {
-                    Text("Enter the 16-byte (32 hex character) secret key from Gadgetbridge export. This key is required for authentication.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Enter the 16-byte (32 hex character) secret key from Gadgetbridge export. This key is required for authentication.")
+                        if !keyInput.isEmpty {
+                            Text("Clean key length: \(cleanedKey.count)/32")
+                                .font(.caption2)
+                                .foregroundColor(isValidKey ? .green : .orange)
+                        }
+                    }
                 }
-                
+
                 if let error = errorMessage {
                     Section {
                         Text(error)
                             .foregroundColor(.red)
                     }
                 }
-                
+
                 Section {
                     Text("To get your key from Gadgetbridge:")
                         .font(.headline)
@@ -234,21 +261,27 @@ struct SecretKeyInputView: View {
                     Button("Save") {
                         saveKey()
                     }
-                    .disabled(keyInput.count != 32)
+                    .disabled(!isValidKey)
                 }
             }
         }
     }
-    
+
     private func saveKey() {
         guard let deviceId = deviceId else { return }
-        
+
         do {
             try watchManager.setSecretKey(keyInput, for: deviceId)
             isPresented = false
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+extension Character {
+    var isHexDigit: Bool {
+        return "0123456789ABCDEFabcdef".contains(self)
     }
 }
 
