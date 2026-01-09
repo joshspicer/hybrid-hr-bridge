@@ -127,6 +127,41 @@ final class BluetoothManager: NSObject, ObservableObject {
 
         logger.debug("BLE", "Connection request sent to CoreBluetooth")
     }
+
+    /// Connect to a device by UUID (useful for reconnecting to saved devices)
+    func connect(toDeviceWithUUID uuid: UUID) {
+        logger.info("BLE", "Attempting to connect to device with UUID: \(uuid)")
+
+        guard centralManager.state == .poweredOn else {
+            logger.error("BLE", "Cannot connect - Bluetooth not powered on")
+            lastError = .bluetoothNotAvailable
+            return
+        }
+
+        // Try to retrieve the peripheral from CoreBluetooth
+        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+
+        guard let peripheral = peripherals.first else {
+            logger.warning("BLE", "Peripheral with UUID \(uuid) not found - starting scan")
+            // If we can't retrieve it, we need to scan for it first
+            lastError = .deviceNotFound
+            startScanning()
+            return
+        }
+
+        logger.info("BLE", "Found peripheral: \(peripheral.name ?? "Unknown")")
+        stopScanning()
+        connectionState = .connecting
+        pendingConnection = peripheral
+        peripheral.delegate = self
+
+        centralManager.connect(peripheral, options: [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+        ])
+
+        logger.debug("BLE", "Connection request sent to CoreBluetooth for saved device")
+    }
     
     /// Disconnect from the current device
     func disconnect() {
@@ -442,7 +477,8 @@ enum BluetoothError: Error, LocalizedError {
     case characteristicNotFound
     case writeFailed(Error)
     case timeout
-    
+    case deviceNotFound
+
     var errorDescription: String? {
         switch self {
         case .bluetoothNotAvailable:
@@ -467,6 +503,8 @@ enum BluetoothError: Error, LocalizedError {
             return "Write failed: \(error.localizedDescription)"
         case .timeout:
             return "Operation timed out"
+        case .deviceNotFound:
+            return "Device not found - scanning..."
         }
     }
 }

@@ -62,34 +62,47 @@ struct DeviceListView: View {
                 if !watchManager.savedDevices.isEmpty {
                     Section("Saved Devices") {
                         ForEach(watchManager.savedDevices) { device in
-                            HStack {
-                                Image(systemName: "applewatch")
-                                    .foregroundColor(.gray)
-                                VStack(alignment: .leading) {
-                                    Text(device.name)
-                                    if device.secretKey != nil {
-                                        Text("Key configured")
-                                            .font(.caption)
-                                            .foregroundColor(.green)
-                                    } else {
-                                        Text("Key required")
-                                            .font(.caption)
-                                            .foregroundColor(.orange)
-                                    }
+                            Button {
+                                if device.secretKey != nil {
+                                    // Has key - attempt connection
+                                    watchManager.connect(toSavedDevice: device.id)
+                                } else {
+                                    // No key - show key input
+                                    selectedDeviceId = device.id
+                                    secretKeyInput = ""
+                                    showingKeyInput = true
                                 }
-                                Spacer()
-                                
-                                Menu {
-                                    Button("Set Secret Key") {
-                                        selectedDeviceId = device.id
-                                        secretKeyInput = device.secretKey ?? ""
-                                        showingKeyInput = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "applewatch")
+                                        .foregroundColor(.gray)
+                                    VStack(alignment: .leading) {
+                                        Text(device.name)
+                                            .foregroundColor(.primary)
+                                        if device.secretKey != nil {
+                                            Text("Key configured")
+                                                .font(.caption)
+                                                .foregroundColor(.green)
+                                        } else {
+                                            Text("Key required")
+                                                .font(.caption)
+                                                .foregroundColor(.orange)
+                                        }
                                     }
-                                    Button("Remove", role: .destructive) {
-                                        watchManager.removeSavedDevice(device.id)
+                                    Spacer()
+
+                                    Menu {
+                                        Button("Set Secret Key") {
+                                            selectedDeviceId = device.id
+                                            secretKeyInput = device.secretKey ?? ""
+                                            showingKeyInput = true
+                                        }
+                                        Button("Remove", role: .destructive) {
+                                            watchManager.removeSavedDevice(device.id)
+                                        }
+                                    } label: {
+                                        Image(systemName: "ellipsis.circle")
                                     }
-                                } label: {
-                                    Image(systemName: "ellipsis.circle")
                                 }
                             }
                         }
