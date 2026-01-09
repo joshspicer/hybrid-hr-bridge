@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Detail view for a connected watch
@@ -8,6 +9,9 @@ struct DeviceDetailView: View {
     @State private var isSyncingTime = false
     @State private var showingAppInstall = false
     @State private var statusMessage: String?
+    @State private var isExportingLogs = false
+    @State private var logShareURL: URL?
+    @State private var logExportError: String?
     
     var body: some View {
         List {
@@ -85,6 +89,27 @@ struct DeviceDetailView: View {
                 }
             }
             
+            // Diagnostics / Logging
+            Section("Diagnostics") {
+                Button {
+                    exportLogs()
+                } label: {
+                    HStack {
+                        Image(systemName: "square.and.arrow.up.on.square")
+                            .frame(width: 30)
+                        Text("Export Logs")
+                        Spacer()
+                        if isExportingLogs {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                    }
+                }
+                .disabled(isExportingLogs || !BridgeLogger.shared.hasLogs())
+            } footer: {
+                Text("Exports recent verbose logs to a text file for troubleshooting connection or authentication issues.")
+            }
+            
             // Transfer Progress
             if watchManager.fileTransferManager.isTransferring {
                 Section("Transfer") {
@@ -117,6 +142,27 @@ struct DeviceDetailView: View {
         .sheet(isPresented: $showingAppInstall) {
             AppInstallView()
         }
+        .sheet(
+            isPresented: Binding(
+                get: { logShareURL != nil },
+                set: { if !$0 { logShareURL = nil } }
+            )
+        ) {
+            if let url = logShareURL {
+                ShareSheet(activityItems: [url])
+            }
+        }
+        .alert(
+            "Export Failed",
+            isPresented: Binding(
+                get: { logExportError != nil },
+                set: { if !$0 { logExportError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(logExportError ?? "")
+        }
     }
     
     private func syncTime() {
@@ -142,6 +188,21 @@ struct DeviceDetailView: View {
             } catch {
                 statusMessage = "Auth failed: \(error.localizedDescription)"
             }
+        }
+    }
+    
+    private func exportLogs() {
+        isExportingLogs = true
+        logExportError = nil
+        
+        Task {
+            do {
+                let url = try BridgeLogger.shared.exportLogFile()
+                logShareURL = url
+            } catch {
+                logExportError = error.localizedDescription
+            }
+            isExportingLogs = false
         }
     }
 }
@@ -364,6 +425,17 @@ struct AppInstallView: View {
             isInstalling = false
         }
     }
+}
+
+/// UIKit wrapper to present the iOS share sheet
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
 }
 
 #Preview {

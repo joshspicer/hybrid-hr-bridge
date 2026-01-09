@@ -86,7 +86,7 @@ final class FileTransferManager: ObservableObject {
         
         // Build and send file put header
         let header = RequestBuilder.buildFilePutRequest(handle: handle, data: data)
-        print("[FileTransfer] Sending PUT header for \(handle): \(header.hexString)")
+        BridgeLogger.shared.log("[FileTransfer] Sending PUT header for \(handle): \(header.hexString)")
         
         try await bluetoothManager.write(
             data: header,
@@ -110,7 +110,7 @@ final class FileTransferManager: ObservableObject {
             }
         }
         
-        print("[FileTransfer] Transfer complete!")
+        BridgeLogger.shared.log("[FileTransfer] Transfer complete!")
     }
     
     /// Send a notification to the watch
@@ -140,7 +140,7 @@ final class FileTransferManager: ObservableObject {
         // Time sync uses the configuration file handle
         try await putFile(configData, to: .configuration)
         
-        print("[FileTransfer] Time synced to \(date)")
+        BridgeLogger.shared.log("[FileTransfer] Time synced to \(date)")
     }
     
     /// Install a watch app (.wapp file)
@@ -149,7 +149,7 @@ final class FileTransferManager: ObservableObject {
         // We just need to send it to the APP_CODE handle
         try await putFile(wappData, to: .appCode)
         
-        print("[FileTransfer] App installed (\(wappData.count) bytes)")
+        BridgeLogger.shared.log("[FileTransfer] App installed (\(wappData.count) bytes)")
     }
     
     // MARK: - Private Methods
@@ -159,7 +159,7 @@ final class FileTransferManager: ObservableObject {
         
         let responseType = data[0] & 0x0F
         
-        print("[FileTransfer] Response type: \(String(format: "0x%02X", responseType)), data: \(data.hexString)")
+        BridgeLogger.shared.log("[FileTransfer] Response type: \(String(format: "0x%02X", responseType)), data: \(data.hexString)")
         
         switch responseType {
         case FossilConstants.ResponseType.filePutInit.rawValue:
@@ -179,7 +179,7 @@ final class FileTransferManager: ObservableObject {
             continueDataTransfer()
             
         default:
-            print("[FileTransfer] Unknown response type: \(responseType)")
+            BridgeLogger.shared.log("[FileTransfer] Unknown response type: \(responseType)")
         }
     }
     
@@ -193,13 +193,13 @@ final class FileTransferManager: ObservableObject {
         let resultCode = data[3]
         if resultCode != 0 {
             if let code = FossilConstants.ResultCode(rawValue: resultCode) {
-                print("[FileTransfer] PUT init failed: \(code)")
+                BridgeLogger.shared.log("[FileTransfer] PUT init failed: \(code)")
             }
             failTransfer(with: .rejected(resultCode))
             return
         }
         
-        print("[FileTransfer] PUT init accepted, starting data transfer")
+        BridgeLogger.shared.log("[FileTransfer] PUT init accepted, starting data transfer")
         transferState = .sendingData
         continueDataTransfer()
     }
@@ -248,7 +248,7 @@ final class FileTransferManager: ObservableObject {
         bytesSent += chunkSize
         progress = Double(bytesSent) / Double(data.count)
         
-        print("[FileTransfer] Sending chunk: \(bytesSent)/\(data.count) bytes (\(Int(progress * 100))%)")
+        BridgeLogger.shared.log("[FileTransfer] Sending chunk: \(bytesSent)/\(data.count) bytes (\(Int(progress * 100))%)")
         
         // Send to file data characteristic
         Task {

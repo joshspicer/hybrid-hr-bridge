@@ -84,7 +84,7 @@ final class BluetoothManager: NSObject, ObservableObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
         
-        print("[BLE] Started scanning for Fossil devices")
+        BridgeLogger.shared.log("[BLE] Started scanning for Fossil devices")
     }
     
     /// Stop scanning for devices
@@ -94,7 +94,7 @@ final class BluetoothManager: NSObject, ObservableObject {
         if connectionState == .scanning {
             connectionState = .disconnected
         }
-        print("[BLE] Stopped scanning")
+        BridgeLogger.shared.log("[BLE] Stopped scanning")
     }
     
     /// Connect to a discovered device
@@ -109,7 +109,7 @@ final class BluetoothManager: NSObject, ObservableObject {
             CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
         ])
         
-        print("[BLE] Connecting to \(device.name)...")
+        BridgeLogger.shared.log("[BLE] Connecting to \(device.name)...")
     }
     
     /// Disconnect from the current device
@@ -117,7 +117,7 @@ final class BluetoothManager: NSObject, ObservableObject {
         guard let device = connectedDevice else { return }
         connectionState = .disconnecting
         centralManager.cancelPeripheralConnection(device.peripheral)
-        print("[BLE] Disconnecting...")
+        BridgeLogger.shared.log("[BLE] Disconnecting...")
     }
     
     /// Write data to a characteristic
@@ -176,16 +176,16 @@ extension BluetoothManager: CBCentralManagerDelegate {
         Task { @MainActor in
             switch central.state {
             case .poweredOn:
-                print("[BLE] Bluetooth powered on")
+                BridgeLogger.shared.log("[BLE] Bluetooth powered on")
             case .poweredOff:
-                print("[BLE] Bluetooth powered off")
+                BridgeLogger.shared.log("[BLE] Bluetooth powered off")
                 lastError = .bluetoothPoweredOff
                 connectionState = .disconnected
             case .unauthorized:
-                print("[BLE] Bluetooth unauthorized")
+                BridgeLogger.shared.log("[BLE] Bluetooth unauthorized")
                 lastError = .bluetoothUnauthorized
             case .unsupported:
-                print("[BLE] Bluetooth unsupported")
+                BridgeLogger.shared.log("[BLE] Bluetooth unsupported")
                 lastError = .bluetoothUnsupported
             default:
                 break
@@ -210,14 +210,14 @@ extension BluetoothManager: CBCentralManagerDelegate {
                     lastSeen: Date()
                 )
                 discoveredDevices.append(device)
-                print("[BLE] Discovered: \(name) (RSSI: \(RSSI))")
+                BridgeLogger.shared.log("[BLE] Discovered: \(name) (RSSI: \(RSSI))")
             }
         }
     }
     
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
-            print("[BLE] Connected to \(peripheral.name ?? "Unknown")")
+            BridgeLogger.shared.log("[BLE] Connected to \(peripheral.name ?? "Unknown")")
             connectionState = .discovering
             connectedDevice = ConnectedDevice(
                 peripheral: peripheral,
@@ -231,7 +231,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            print("[BLE] Failed to connect: \(error?.localizedDescription ?? "Unknown error")")
+            BridgeLogger.shared.log("[BLE] Failed to connect: \(error?.localizedDescription ?? "Unknown error")")
             lastError = .connectionFailed(error)
             connectionState = .disconnected
             pendingConnection = nil
@@ -240,7 +240,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            print("[BLE] Disconnected from \(peripheral.name ?? "Unknown")")
+            BridgeLogger.shared.log("[BLE] Disconnected from \(peripheral.name ?? "Unknown")")
             connectedDevice = nil
             connectionState = .disconnected
             characteristicUpdateHandlers.removeAll()
@@ -256,7 +256,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
             Task { @MainActor in
                 for peripheral in peripherals {
-                    print("[BLE] Restored peripheral: \(peripheral.name ?? "Unknown")")
+                    BridgeLogger.shared.log("[BLE] Restored peripheral: \(peripheral.name ?? "Unknown")")
                     peripheral.delegate = self
                 }
             }
@@ -271,7 +271,7 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
             if let error = error {
-                print("[BLE] Service discovery error: \(error)")
+                BridgeLogger.shared.log("[BLE] Service discovery error: \(error)")
                 lastError = .serviceDiscoveryFailed(error)
                 return
             }
@@ -279,7 +279,7 @@ extension BluetoothManager: CBPeripheralDelegate {
             guard let services = peripheral.services else { return }
             
             for service in services {
-                print("[BLE] Discovered service: \(service.uuid)")
+                BridgeLogger.shared.log("[BLE] Discovered service: \(service.uuid)")
                 if service.uuid == FossilConstants.serviceUUID {
                     peripheral.discoverCharacteristics(FossilConstants.allCharacteristics, for: service)
                 }
@@ -290,7 +290,7 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                print("[BLE] Characteristic discovery error: \(error)")
+                BridgeLogger.shared.log("[BLE] Characteristic discovery error: \(error)")
                 lastError = .characteristicDiscoveryFailed(error)
                 return
             }
@@ -298,7 +298,7 @@ extension BluetoothManager: CBPeripheralDelegate {
             guard let characteristics = service.characteristics else { return }
             
             for characteristic in characteristics {
-                print("[BLE] Discovered characteristic: \(characteristic.uuid)")
+                BridgeLogger.shared.log("[BLE] Discovered characteristic: \(characteristic.uuid)")
                 connectedDevice?.characteristics[characteristic.uuid] = characteristic
                 
                 // Enable notifications for characteristics that support it
@@ -309,7 +309,7 @@ extension BluetoothManager: CBPeripheralDelegate {
             
             // Check if we have all characteristics
             if connectedDevice?.isReady == true {
-                print("[BLE] All characteristics discovered, device ready")
+                BridgeLogger.shared.log("[BLE] All characteristics discovered, device ready")
                 connectionState = .authenticating
                 // Authentication will be handled by AuthenticationManager
             }
@@ -319,13 +319,13 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                print("[BLE] Characteristic update error: \(error)")
+                BridgeLogger.shared.log("[BLE] Characteristic update error: \(error)")
                 return
             }
             
             guard let data = characteristic.value else { return }
             
-            print("[BLE] Received from \(characteristic.uuid): \(data.hexString)")
+            BridgeLogger.shared.log("[BLE] Received from \(characteristic.uuid): \(data.hexString)")
             
             // Call registered handler
             if let handler = characteristicUpdateHandlers[characteristic.uuid] {
@@ -337,9 +337,9 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                print("[BLE] Write error: \(error)")
+                BridgeLogger.shared.log("[BLE] Write error: \(error)")
             } else {
-                print("[BLE] Write successful to \(characteristic.uuid)")
+                BridgeLogger.shared.log("[BLE] Write successful to \(characteristic.uuid)")
             }
             
             writeCompletionHandler?(error)
@@ -350,9 +350,9 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                print("[BLE] Notification state error for \(characteristic.uuid): \(error)")
+                BridgeLogger.shared.log("[BLE] Notification state error for \(characteristic.uuid): \(error)")
             } else {
-                print("[BLE] Notifications \(characteristic.isNotifying ? "enabled" : "disabled") for \(characteristic.uuid)")
+                BridgeLogger.shared.log("[BLE] Notifications \(characteristic.isNotifying ? "enabled" : "disabled") for \(characteristic.uuid)")
             }
         }
     }

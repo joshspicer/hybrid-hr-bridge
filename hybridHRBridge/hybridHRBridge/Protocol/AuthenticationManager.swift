@@ -55,7 +55,7 @@ final class AuthenticationManager: ObservableObject {
         }
         
         self.secretKey = keyData
-        print("[Auth] Secret key set (\(keyData.count) bytes)")
+        BridgeLogger.shared.log("[Auth] Secret key set (\(keyData.count) bytes)")
     }
     
     /// Perform authentication with the watch
@@ -82,7 +82,7 @@ final class AuthenticationManager: ObservableObject {
         
         // Build and send start sequence
         let startSequence = buildStartSequence()
-        print("[Auth] Sending challenge: \(startSequence.hexString)")
+        BridgeLogger.shared.log("[Auth] Sending challenge: \(startSequence.hexString)")
         
         try await bluetoothManager.write(
             data: startSequence,
@@ -140,7 +140,7 @@ final class AuthenticationManager: ObservableObject {
         let responseType = data[0]
         let subType = data[1]
         
-        print("[Auth] Received response type: \(responseType), subType: \(subType)")
+        BridgeLogger.shared.log("[Auth] Received response type: \(responseType), subType: \(subType)")
         
         // Check for encrypted challenge (response type 2, subtype 1)
         if responseType == 0x02 && subType == 0x01 && data.count >= 18 {
@@ -151,7 +151,7 @@ final class AuthenticationManager: ObservableObject {
             handleAuthResult(data)
         }
         else {
-            print("[Auth] Unknown response: \(data.hexString)")
+            BridgeLogger.shared.log("[Auth] Unknown response: \(data.hexString)")
         }
     }
     
@@ -170,7 +170,7 @@ final class AuthenticationManager: ObservableObject {
         do {
             // Decrypt the challenge
             let decrypted = try AESCrypto.decryptCBC(data: encryptedChallenge, key: key)
-            print("[Auth] Decrypted challenge: \(decrypted.hexString)")
+            BridgeLogger.shared.log("[Auth] Decrypted challenge: \(decrypted.hexString)")
             
             // Extract watch random number (first 8 bytes) and verify phone random (last 8 bytes)
             watchRandomNumber = decrypted.subdata(in: 0..<8)
@@ -178,7 +178,7 @@ final class AuthenticationManager: ObservableObject {
             
             // Verify the echoed phone random matches what we sent
             guard echoedPhoneRandom == phoneRandomNumber else {
-                print("[Auth] Phone random mismatch!")
+                BridgeLogger.shared.log("[Auth] Phone random mismatch!")
                 failAuth(with: .verificationFailed)
                 return
             }
@@ -198,7 +198,7 @@ final class AuthenticationManager: ObservableObject {
             response.append(0x01)  // Status
             response.append(encrypted)
             
-            print("[Auth] Sending response: \(response.hexString)")
+            BridgeLogger.shared.log("[Auth] Sending response: \(response.hexString)")
             
             // Send response
             Task {
@@ -228,14 +228,14 @@ final class AuthenticationManager: ObservableObject {
         
         if status == 0x01 {
             // Success
-            print("[Auth] Authentication successful!")
+            BridgeLogger.shared.log("[Auth] Authentication successful!")
             authState = .authenticated
             isAuthenticated = true
             authContinuation?.resume()
             authContinuation = nil
         } else {
             // Failed
-            print("[Auth] Authentication failed with status: \(status)")
+            BridgeLogger.shared.log("[Auth] Authentication failed with status: \(status)")
             failAuth(with: .rejected)
         }
     }

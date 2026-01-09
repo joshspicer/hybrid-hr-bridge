@@ -250,7 +250,7 @@ final class WatchManager: ObservableObject {
                 do {
                     try await authenticate()
                 } catch {
-                    print("[WatchManager] Auto-auth failed: \(error)")
+                    BridgeLogger.shared.log("[WatchManager] Auto-auth failed: \(error)")
                     // Still connected, just not authenticated
                     connectionStatus = .connected
                 }
