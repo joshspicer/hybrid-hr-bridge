@@ -45,9 +45,52 @@ hybridHRBridge/
 - Include source links in comments (e.g., `// Source: VerifyPrivateKeyRequest.java#L40-L134`)
 - Update `docs/PROTOCOL_SPECIFICATION.md` when discovering new protocol details
 
+### Debug Logging
+- **ALWAYS** add entries to the in-app debug log for any important changes, operations, or state transitions
+- Use `LogManager.shared` singleton for centralized logging that persists in-app and can be exported
+- Initialize a logger instance in your class: `private let logger = LogManager.shared`
+- Log categories for consistent organization:
+  - `"BLE"` - Bluetooth operations (discovery, connection, data transfer)
+  - `"Auth"` - Authentication steps and key management
+  - `"Protocol"` - BLE protocol messages and file transfers
+  - `"UI"` - User-initiated actions and view transitions
+  - `"FileTransfer"` - File upload/download operations
+  - Use component/class name for other operations (e.g., `"WatchManager"`, `"RequestBuilder"`)
+- Log levels:
+  - `.debug()` - Detailed technical data (hex dumps, state details, verbose operation info)
+  - `.info()` - Normal operations (connection established, command sent, operation completed)
+  - `.warning()` - Recoverable issues (retries, fallbacks, unexpected but handled states)
+  - `.error()` - Failures that prevent operation (connection failures, authentication errors, invalid data)
+- Log at key points:
+  - Start of async operations: `logger.info("BLE", "Starting scan for devices")`
+  - Completion: `logger.info("BLE", "Connected to \(device.name)")`
+  - State changes: `logger.debug("Auth", "Auth state changed to: \(newState)")`
+  - Data transfers: `logger.debug("Protocol", "Sending \(data.count) bytes: \(data.hexString)")`
+  - Errors: `logger.error("BLE", "Connection failed: \(error.localizedDescription)")`
+- Users can export logs via the Debug Logs screen for troubleshooting
+- Example usage:
+```swift
+final class MyManager {
+    private let logger = LogManager.shared
+
+    func performOperation() async throws {
+        logger.info("MyManager", "Starting operation")
+
+        do {
+            let result = try await someAsyncCall()
+            logger.debug("MyManager", "Operation result: \(result)")
+            logger.info("MyManager", "Operation completed successfully")
+        } catch {
+            logger.error("MyManager", "Operation failed: \(error.localizedDescription)")
+            throw error
+        }
+    }
+}
+```
+
 ### Testing
 - Bluetooth cannot be tested in the simulator - requires physical device
-- Use `print("[Component] message")` logging pattern for debugging BLE communication
+- Console `print()` statements are acceptable for temporary debugging but should not replace LogManager for persistent logs
 
 ## External References
 
@@ -75,14 +118,24 @@ xcodebuild -project hybridHRBridge/hybridHRBridge.xcodeproj -scheme hybridHRBrid
 ### Adding a new file handle
 1. Add case to `FileHandle.swift` enum
 2. Reference `FileHandle.java` in Gadgetbridge for correct major/minor values
+3. Add debug logging for file handle operations
 
 ### Implementing new protocol feature
 1. Find corresponding Java class in Gadgetbridge (`requests/fossil_hr/` or `requests/fossil/`)
 2. Document the source file and line numbers
 3. Implement in Swift following existing patterns in `Protocol/` directory
-4. Add high-level API in `WatchManager.swift`
+4. **Add debug logging** for the new protocol operations (start, completion, errors)
+5. Add high-level API in `WatchManager.swift`
 
 ### Adding UI for new feature
 1. Create view in `Views/` directory
 2. Wire to `WatchManager` via `@EnvironmentObject`
 3. Handle async operations with proper loading/error states
+4. **Add info-level logging** for user-initiated actions to help with troubleshooting
+
+### General Rule: Always Add Logging
+For **any** implementation work:
+- Add logging at the start of operations
+- Add logging for state changes
+- Add logging for completion (success or failure)
+- This helps with debugging BLE issues and user support
