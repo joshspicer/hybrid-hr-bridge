@@ -20,20 +20,25 @@ final class WatchManager: ObservableObject {
     let fileTransferManager: FileTransferManager
     
     // MARK: - Private Properties
-    
+
     private var cancellables = Set<AnyCancellable>()
     private let userDefaults = UserDefaults.standard
     private let devicesKey = "savedDevices"
-    
+    private let lastConnectedDeviceKey = "lastConnectedDeviceId"
+    private var hasAttemptedAutoReconnect = false
+
     // MARK: - Initialization
-    
+
     init() {
         bluetoothManager = BluetoothManager()
         authManager = AuthenticationManager(bluetoothManager: bluetoothManager)
         fileTransferManager = FileTransferManager(bluetoothManager: bluetoothManager, authManager: authManager)
-        
+
         loadSavedDevices()
         setupBindings()
+
+        // Attempt to reconnect to last device when Bluetooth becomes available
+        setupAutoReconnect()
     }
     
     // MARK: - Device Discovery
@@ -67,11 +72,13 @@ final class WatchManager: ObservableObject {
     
     /// Connect to a saved device by ID
     func connect(toSavedDevice id: UUID) {
-        guard let device = discoveredDevices.first(where: { $0.id == id }) else {
+        guard savedDevices.contains(where: { $0.id == id }) else {
             lastError = WatchManagerError.deviceNotFound
             return
         }
-        connect(to: device)
+
+        connectionStatus = .connecting
+        bluetoothManager.connect(toDeviceWithUUID: id)
     }
     
     /// Disconnect from the current device
@@ -266,13 +273,63 @@ final class WatchManager: ObservableObject {
             if let saved = savedDevices.first(where: { $0.id == device.peripheral.identifier }) {
                 connectedWatch = saved
                 connectedWatch?.lastConnected = Date()
+                // Update the saved device with last connected time
+                if let index = savedDevices.firstIndex(where: { $0.id == device.peripheral.identifier }) {
+                    savedDevices[index].lastConnected = Date()
+                    saveSavedDevices()
+                }
             } else {
                 // Create new device
                 connectedWatch = WatchDevice(id: device.peripheral.identifier, name: device.name)
             }
+
+            // Save as last connected device
+            userDefaults.set(device.peripheral.identifier.uuidString, forKey: lastConnectedDeviceKey)
+            print("[WatchManager] Saved last connected device: \(device.peripheral.identifier)")
         } else {
             connectedWatch = nil
         }
+    }
+
+    private func setupAutoReconnect() {
+        // Monitor Bluetooth state to auto-reconnect when it becomes available
+        bluetoothManager.$connectionState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self = self else { return }
+
+                // Only attempt auto-reconnect once when Bluetooth becomes ready
+                // and we're in disconnected state
+                if self.hasAttemptedAutoReconnect {
+                    return
+                }
+
+                if state != .disconnected {
+                    return
+                }
+
+                // Check if we should auto-reconnect
+                if let lastDeviceUUIDString = self.userDefaults.string(forKey: self.lastConnectedDeviceKey),
+                   let lastDeviceUUID = UUID(uuidString: lastDeviceUUIDString),
+                   let savedDevice = self.savedDevices.first(where: { $0.id == lastDeviceUUID }),
+                   savedDevice.secretKey != nil {
+
+                    print("[WatchManager] Found last connected device '\(savedDevice.name)' with key - attempting auto-reconnect")
+                    self.hasAttemptedAutoReconnect = true
+
+                    // Small delay to ensure Bluetooth is fully ready
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                        await MainActor.run {
+                            if self.connectionStatus == .disconnected {
+                                print("[WatchManager] Auto-reconnecting to saved device")
+                                self.connect(toSavedDevice: lastDeviceUUID)
+                            }
+                        }
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
     
     private func loadSavedDevices() {
