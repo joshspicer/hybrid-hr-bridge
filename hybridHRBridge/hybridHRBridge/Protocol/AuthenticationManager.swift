@@ -25,8 +25,9 @@ final class AuthenticationManager: ObservableObject {
     }
     
     // MARK: - Private Properties
-    
+
     private let bluetoothManager: BluetoothManager
+    private let logger = LogManager.shared
     private var secretKey: Data?
     private var phoneRandomNumber: Data?
     private var watchRandomNumber: Data?
@@ -55,50 +56,65 @@ final class AuthenticationManager: ObservableObject {
         }
         
         self.secretKey = keyData
-        print("[Auth] Secret key set (\(keyData.count) bytes)")
+        logger.info("Auth", "Secret key set (\(keyData.count) bytes)")
+        logger.debug("Auth", "Key hex: \(keyData.prefix(8).hexString)...")
     }
     
     /// Perform authentication with the watch
     /// This should be called after characteristics are discovered
     func authenticate() async throws {
+        logger.info("Auth", "Starting authentication process")
+
         guard let key = secretKey else {
+            logger.error("Auth", "No secret key configured")
             throw AuthError.noSecretKey
         }
-        
+
+        logger.debug("Auth", "Secret key available, proceeding with authentication")
         authState = .sendingChallenge
-        
+
         // Generate 8 random bytes for challenge
         phoneRandomNumber = AESCrypto.generateRandomBytes(count: 8)
+        logger.debug("Auth", "Generated phone random number: \(phoneRandomNumber!.hexString)")
         
         // Register handler for authentication responses
+        logger.debug("Auth", "Registering notification handler for authentication characteristic")
         bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicAuthentication) { [weak self] data in
             Task { @MainActor in
                 self?.handleAuthResponse(data)
             }
         }
-        
+
         // Enable notifications for auth characteristic
+        logger.debug("Auth", "Enabling notifications for authentication characteristic")
         try await bluetoothManager.enableNotifications(for: FossilConstants.characteristicAuthentication)
-        
+
         // Build and send start sequence
         let startSequence = buildStartSequence()
-        print("[Auth] Sending challenge: \(startSequence.hexString)")
-        
+        logger.info("Auth", "Sending authentication challenge (length: \(startSequence.count) bytes)")
+        logger.debug("Auth", "Challenge data: \(startSequence.hexString)")
+
         try await bluetoothManager.write(
             data: startSequence,
             to: FossilConstants.characteristicAuthentication
         )
-        
+
         authState = .awaitingResponse
+        logger.info("Auth", "Challenge sent, awaiting watch response...")
         
         // Wait for authentication to complete
+        logger.debug("Auth", "Waiting for authentication to complete (10 second timeout)")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.authContinuation = continuation
-            
+
             // Set timeout
             Task {
                 try await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
                 if self.authState == .awaitingResponse {
+                    self.logger.error("Auth", "Authentication timed out after 10 seconds")
+                    self.logger.error("Auth", "Auth state: \(String(describing: self.authState))")
+                    self.logger.error("Auth", "Phone random: \(self.phoneRandomNumber?.hexString ?? "nil")")
+                    self.logger.error("Auth", "Watch random: \(self.watchRandomNumber?.hexString ?? "nil")")
                     self.authContinuation?.resume(throwing: AuthError.timeout)
                     self.authContinuation = nil
                     self.authState = .failed
@@ -132,74 +148,96 @@ final class AuthenticationManager: ObservableObject {
     
     /// Handle authentication response from watch
     private func handleAuthResponse(_ data: Data) {
+        logger.debug("Auth", "Received response from watch (length: \(data.count) bytes)")
+        logger.debug("Auth", "Response data: \(data.hexString)")
+
         guard data.count >= 2 else {
+            logger.error("Auth", "Response too short: \(data.count) bytes")
             failAuth(with: .invalidResponse)
             return
         }
-        
+
         let responseType = data[0]
         let subType = data[1]
-        
-        print("[Auth] Received response type: \(responseType), subType: \(subType)")
-        
+
+        logger.info("Auth", "Response type: 0x\(String(format: "%02X", responseType)), subType: 0x\(String(format: "%02X", subType))")
+
         // Check for encrypted challenge (response type 2, subtype 1)
         if responseType == 0x02 && subType == 0x01 && data.count >= 18 {
+            logger.info("Auth", "Received encrypted challenge from watch")
             handleChallenge(data)
         }
         // Check for auth result (response type 2, subtype 2 or 3)
         else if responseType == 0x02 && (subType == 0x02 || subType == 0x03) {
+            logger.info("Auth", "Received authentication result from watch")
             handleAuthResult(data)
         }
         else {
-            print("[Auth] Unknown response: \(data.hexString)")
+            logger.warning("Auth", "Unknown response format")
+            logger.debug("Auth", "Full response: \(data.hexString)")
         }
     }
     
     /// Process the encrypted challenge from the watch
     private func handleChallenge(_ data: Data) {
+        logger.info("Auth", "Processing encrypted challenge from watch")
+
         guard let key = secretKey else {
+            logger.error("Auth", "No secret key available for decryption")
             failAuth(with: .noSecretKey)
             return
         }
-        
+
         authState = .verifying
-        
+
         // Extract 16 encrypted bytes (starting at byte 2)
         let encryptedChallenge = data.subdata(in: 2..<18)
-        
+        logger.debug("Auth", "Encrypted challenge: \(encryptedChallenge.hexString)")
+
         do {
             // Decrypt the challenge
             let decrypted = try AESCrypto.decryptCBC(data: encryptedChallenge, key: key)
-            print("[Auth] Decrypted challenge: \(decrypted.hexString)")
-            
+            logger.debug("Auth", "Decrypted challenge: \(decrypted.hexString)")
+
             // Extract watch random number (first 8 bytes) and verify phone random (last 8 bytes)
             watchRandomNumber = decrypted.subdata(in: 0..<8)
             let echoedPhoneRandom = decrypted.subdata(in: 8..<16)
-            
+
+            logger.debug("Auth", "Watch random number: \(watchRandomNumber!.hexString)")
+            logger.debug("Auth", "Echoed phone random: \(echoedPhoneRandom.hexString)")
+            logger.debug("Auth", "Original phone random: \(phoneRandomNumber!.hexString)")
+
             // Verify the echoed phone random matches what we sent
             guard echoedPhoneRandom == phoneRandomNumber else {
-                print("[Auth] Phone random mismatch!")
+                logger.error("Auth", "Phone random number mismatch!")
+                logger.error("Auth", "Expected: \(phoneRandomNumber!.hexString)")
+                logger.error("Auth", "Received: \(echoedPhoneRandom.hexString)")
                 failAuth(with: .verificationFailed)
                 return
             }
-            
+
+            logger.info("Auth", "Phone random verification successful")
+
             // Swap halves: first 8 bytes ↔ last 8 bytes
             var swapped = Data(count: 16)
             swapped.replaceSubrange(0..<8, with: decrypted.subdata(in: 8..<16))
             swapped.replaceSubrange(8..<16, with: decrypted.subdata(in: 0..<8))
-            
+            logger.debug("Auth", "Swapped data: \(swapped.hexString)")
+
             // Re-encrypt
             let encrypted = try AESCrypto.encryptCBC(data: swapped, key: key)
-            
+            logger.debug("Auth", "Re-encrypted response: \(encrypted.hexString)")
+
             // Build response
             var response = Data(capacity: 19)
             response.append(0x02)  // Response type
             response.append(0x02)  // Auth response
             response.append(0x01)  // Status
             response.append(encrypted)
-            
-            print("[Auth] Sending response: \(response.hexString)")
-            
+
+            logger.info("Auth", "Sending authentication response to watch")
+            logger.debug("Auth", "Response data: \(response.hexString)")
+
             // Send response
             Task {
                 do {
@@ -207,40 +245,52 @@ final class AuthenticationManager: ObservableObject {
                         data: response,
                         to: FossilConstants.characteristicAuthentication
                     )
+                    self.logger.info("Auth", "Authentication response sent successfully")
                 } catch {
+                    self.logger.error("Auth", "Failed to send response: \(error.localizedDescription)")
                     failAuth(with: .writeFailed(error))
                 }
             }
-            
+
         } catch {
+            logger.error("Auth", "Decryption failed: \(error.localizedDescription)")
             failAuth(with: .decryptionFailed(error))
         }
     }
     
     /// Handle the final authentication result
     private func handleAuthResult(_ data: Data) {
+        logger.info("Auth", "Processing authentication result")
+
         guard data.count >= 3 else {
+            logger.error("Auth", "Auth result data too short: \(data.count) bytes")
             failAuth(with: .invalidResponse)
             return
         }
-        
+
         let status = data[2]
-        
+        logger.debug("Auth", "Result status byte: 0x\(String(format: "%02X", status))")
+
         if status == 0x01 {
             // Success
-            print("[Auth] Authentication successful!")
+            logger.info("Auth", "✅ Authentication successful!")
+            logger.info("Auth", "Watch authenticated and ready for communication")
             authState = .authenticated
             isAuthenticated = true
             authContinuation?.resume()
             authContinuation = nil
         } else {
             // Failed
-            print("[Auth] Authentication failed with status: \(status)")
+            logger.error("Auth", "❌ Authentication rejected by watch")
+            logger.error("Auth", "Status code: 0x\(String(format: "%02X", status))")
+            logger.error("Auth", "Full response: \(data.hexString)")
             failAuth(with: .rejected)
         }
     }
-    
+
     private func failAuth(with error: AuthError) {
+        logger.error("Auth", "Authentication failed: \(error.localizedDescription)")
+        logger.error("Auth", "Final state - phoneRandom: \(phoneRandomNumber?.hexString ?? "nil"), watchRandom: \(watchRandomNumber?.hexString ?? "nil")")
         lastError = error
         authState = .failed
         isAuthenticated = false
