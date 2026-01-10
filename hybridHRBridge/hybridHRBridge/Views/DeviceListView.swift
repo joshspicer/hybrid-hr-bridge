@@ -200,12 +200,17 @@ struct SecretKeyInputView: View {
     @Binding var isPresented: Bool
     @EnvironmentObject var watchManager: WatchManager
     @State private var errorMessage: String?
+    
+    private let logger = LogManager.shared
 
+    /// Clean the key input by removing spaces and ONLY the 0x/0X prefix (not from middle of string)
     private var cleanedKey: String {
-        keyInput
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "0x", with: "")
-            .replacingOccurrences(of: "0X", with: "")
+        var cleaned = keyInput.replacingOccurrences(of: " ", with: "")
+        // Only strip 0x prefix, not occurrences in the middle of the hex string
+        if cleaned.lowercased().hasPrefix("0x") {
+            cleaned = String(cleaned.dropFirst(2))
+        }
+        return cleaned
     }
 
     private var isValidKey: Bool {
@@ -268,12 +273,22 @@ struct SecretKeyInputView: View {
     }
 
     private func saveKey() {
-        guard let deviceId = deviceId else { return }
+        logger.info("UI", "Save button tapped for secret key")
+        logger.debug("UI", "Key input length: \(keyInput.count), cleaned length: \(cleanedKey.count), isValid: \(isValidKey)")
+        
+        guard let deviceId = deviceId else {
+            logger.error("UI", "Cannot save key - no device ID set")
+            return
+        }
+        
+        logger.debug("UI", "Saving key for device ID: \(deviceId)")
 
         do {
             try watchManager.setSecretKey(keyInput, for: deviceId)
+            logger.info("UI", "Secret key saved successfully")
             isPresented = false
         } catch {
+            logger.error("UI", "Failed to save secret key: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }
     }

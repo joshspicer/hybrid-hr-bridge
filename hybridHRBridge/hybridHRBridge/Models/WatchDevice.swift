@@ -8,6 +8,7 @@ struct WatchDevice: Identifiable, Codable {
     var lastConnected: Date?
     var firmwareVersion: String?
     var batteryLevel: Int?
+    var batteryVoltageMillivolts: Int?
     
     init(id: UUID, name: String) {
         self.id = id

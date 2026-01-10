@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreBluetooth
 
 /// Debug view with manual controls for testing and development
 struct DebugView: View {
@@ -210,7 +211,7 @@ struct DebugView: View {
     }
 
     private var bluetoothStateText: String {
-        let state = watchManager.bluetoothManager.centralManager.state
+        let state = watchManager.bluetoothManager.bluetoothState
 
         switch state {
         case .poweredOn:
@@ -231,7 +232,7 @@ struct DebugView: View {
     }
 
     private var bluetoothStateColor: Color {
-        let state = watchManager.bluetoothManager.centralManager.state
+        let state = watchManager.bluetoothManager.bluetoothState
 
         switch state {
         case .poweredOn:

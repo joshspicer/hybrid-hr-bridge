@@ -133,6 +133,11 @@ final class AuthenticationManager: ObservableObject {
         watchRandomNumber
     }
 
+    /// Expose the negotiated secret key for encrypted file transfers
+    func getSecretKey() -> Data? {
+        secretKey
+    }
+
     /// Reset authentication state (called on disconnect)
     func resetAuthState() {
         isAuthenticated = false

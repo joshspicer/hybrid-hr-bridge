@@ -10,6 +10,7 @@ struct DeviceDetailView: View {
     @State private var showingAppInstall = false
     @State private var showingLogExport = false
     @State private var statusMessage: String?
+    @State private var isRefreshingBattery = false
     
     var body: some View {
         List {
@@ -27,6 +28,10 @@ struct DeviceDetailView: View {
                     }
                     if let battery = watch.batteryLevel {
                         LabeledContent("Battery", value: "\(battery)%")
+                    }
+                    if let voltage = watch.batteryVoltageMillivolts {
+                        let volts = Double(voltage) / 1000.0
+                        LabeledContent("Battery Voltage", value: String(format: "%.3f V", volts))
                     }
                     if let firmware = watch.firmwareVersion {
                         LabeledContent("Firmware", value: firmware)
@@ -52,6 +57,22 @@ struct DeviceDetailView: View {
                     }
                 }
                 .disabled(!watchManager.authManager.isAuthenticated || isSyncingTime)
+
+                Button {
+                    refreshBattery()
+                } label: {
+                    HStack {
+                        Image(systemName: "battery.100")
+                            .frame(width: 30)
+                        Text("Refresh Battery")
+                        Spacer()
+                        if isRefreshingBattery {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                    }
+                }
+                .disabled(!watchManager.authManager.isAuthenticated || isRefreshingBattery)
                 
                 // Test Notification
                 Button {
@@ -153,6 +174,28 @@ struct DeviceDetailView: View {
                 statusMessage = "Failed: \(error.localizedDescription)"
             }
             isSyncingTime = false
+        }
+    }
+
+    private func refreshBattery() {
+        statusMessage = nil
+        isRefreshingBattery = true
+
+        Task {
+            do {
+                let status = try await watchManager.refreshBatteryStatus()
+                await MainActor.run {
+                    statusMessage = "Battery \(status.percentage)% (\(status.voltageMillivolts) mV)"
+                }
+            } catch {
+                await MainActor.run {
+                    statusMessage = "Battery update failed: \(error.localizedDescription)"
+                }
+            }
+
+            await MainActor.run {
+                isRefreshingBattery = false
+            }
         }
     }
     

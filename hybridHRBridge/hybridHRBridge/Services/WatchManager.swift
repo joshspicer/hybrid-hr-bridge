@@ -18,6 +18,7 @@ final class WatchManager: ObservableObject {
     let bluetoothManager: BluetoothManager
     let authManager: AuthenticationManager
     let fileTransferManager: FileTransferManager
+    let activityDataManager: ActivityDataManager
     
     // MARK: - Private Properties
 
@@ -26,6 +27,7 @@ final class WatchManager: ObservableObject {
     private let devicesKey = "savedDevices"
     private let lastConnectedDeviceKey = "lastConnectedDeviceId"
     private var hasAttemptedAutoReconnect = false
+    private let logger = LogManager.shared
 
     // MARK: - Initialization
 
@@ -33,6 +35,7 @@ final class WatchManager: ObservableObject {
         bluetoothManager = BluetoothManager()
         authManager = AuthenticationManager(bluetoothManager: bluetoothManager)
         fileTransferManager = FileTransferManager(bluetoothManager: bluetoothManager, authManager: authManager)
+        activityDataManager = ActivityDataManager(bluetoothManager: bluetoothManager, authManager: authManager)
 
         loadSavedDevices()
         setupBindings()
@@ -105,10 +108,24 @@ final class WatchManager: ObservableObject {
     
     /// Set secret key for a device
     func setSecretKey(_ key: String, for deviceId: UUID) throws {
-        // Validate key format
-        let cleanKey = key.replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "0x", with: "")
+        logger.info("WatchManager", "Setting secret key for device: \(deviceId)")
+        logger.debug("WatchManager", "Raw key length: \(key.count)")
+        
+        // Validate key format - only strip 0x prefix, not from middle of string
+        var cleanKey = key.replacingOccurrences(of: " ", with: "")
+        if cleanKey.lowercased().hasPrefix("0x") {
+            cleanKey = String(cleanKey.dropFirst(2))
+        }
+        
+        logger.debug("WatchManager", "Cleaned key length: \(cleanKey.count)")
+        
         guard cleanKey.count == 32 else {
+            logger.error("WatchManager", "Invalid key format - expected 32 hex chars, got \(cleanKey.count)")
+            throw WatchManagerError.invalidKeyFormat
+        }
+        
+        guard cleanKey.allSatisfy({ $0.isHexDigit }) else {
+            logger.error("WatchManager", "Invalid key format - contains non-hex characters")
             throw WatchManagerError.invalidKeyFormat
         }
         
@@ -116,12 +133,18 @@ final class WatchManager: ObservableObject {
         if let index = savedDevices.firstIndex(where: { $0.id == deviceId }) {
             savedDevices[index].secretKey = cleanKey
             saveSavedDevices()
+            logger.info("WatchManager", "Updated saved device with new key")
+        } else {
+            logger.warning("WatchManager", "Device \(deviceId) not found in saved devices")
         }
         
         // Update current device if connected
         if connectedWatch?.id == deviceId {
             connectedWatch?.secretKey = cleanKey
+            logger.info("WatchManager", "Updated connected watch with new key")
         }
+        
+        logger.info("WatchManager", "Secret key set successfully")
     }
     
     // MARK: - Notifications
@@ -172,6 +195,17 @@ final class WatchManager: ObservableObject {
         try await fileTransferManager.syncTime()
     }
     
+    // MARK: - Activity Data
+    
+    /// Fetch activity data (steps, heart rate, calories, etc.) from the watch
+    func fetchActivityData() async throws -> ActivityData {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+        
+        return try await activityDataManager.fetchActivityData()
+    }
+    
     // MARK: - Watch Apps
     
     /// Install a watch app from .wapp file data
@@ -187,6 +221,34 @@ final class WatchManager: ObservableObject {
     func installApp(from url: URL) async throws {
         let data = try Data(contentsOf: url)
         try await installApp(data)
+    }
+
+    /// Refresh battery status by reading encrypted configuration file
+    func refreshBatteryStatus() async throws -> BatteryStatus {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+
+        guard connectionStatus != .disconnected else {
+            throw WatchManagerError.notConnected
+        }
+
+        let status = try await fileTransferManager.readBatteryStatus()
+        logger.info("Battery", "Battery level \(status.percentage)% (\(status.voltageMillivolts) mV)")
+
+        if var watch = connectedWatch {
+            watch.batteryLevel = status.percentage
+            watch.batteryVoltageMillivolts = status.voltageMillivolts
+            connectedWatch = watch
+
+            if let index = savedDevices.firstIndex(where: { $0.id == watch.id }) {
+                savedDevices[index].batteryLevel = status.percentage
+                savedDevices[index].batteryVoltageMillivolts = status.voltageMillivolts
+                saveSavedDevices()
+            }
+        }
+
+        return status
     }
     
     // MARK: - Device Management

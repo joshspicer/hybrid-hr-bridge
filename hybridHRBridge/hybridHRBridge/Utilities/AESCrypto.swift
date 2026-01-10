@@ -176,16 +176,26 @@ struct AESCrypto {
     
     /// Increment IV counter for next packet
     /// The IV is incremented by 0x1F per packet in encrypted transfers
-    static func incrementIV(_ iv: inout Data, by amount: UInt8 = 0x1F) {
-        var carry: UInt16 = UInt16(amount)
-        
-        // Increment from the end (big-endian counter)
-        for i in (0..<iv.count).reversed() {
-            carry += UInt16(iv[i])
-            iv[i] = UInt8(carry & 0xFF)
-            carry >>= 8
+    static func incrementIV(_ iv: inout Data, by amount: Int = 0x1F) {
+        guard amount >= 0 else { return }
+
+        var carry = amount
+
+        // Increment using big-endian counter semantics (matches Gadgetbridge logic)
+        for index in (0..<iv.count).reversed() {
             if carry == 0 { break }
+
+            let sum = Int(iv[index]) + carry
+            iv[index] = UInt8(sum & 0xFF)
+            carry = sum >> 8
         }
+    }
+
+    /// Return a new IV incremented by the supplied amount without mutating the original
+    static func incrementedIV(from iv: Data, by amount: Int) -> Data {
+        var copy = iv
+        incrementIV(&copy, by: amount)
+        return copy
     }
     
     // MARK: - Random Number Generation

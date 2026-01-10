@@ -25,6 +25,24 @@ final class FileTransferManager: ObservableObject {
         case complete
         case failed
     }
+
+    private struct EncryptedReadState {
+        enum Phase {
+            case lookup
+            case encryptedGet
+        }
+
+        var phase: Phase = .lookup
+        var dynamicHandle: UInt16?
+        var lookupExpectedSize: Int = 0
+        var lookupBuffer = Data()
+        var fileSize: Int = 0
+        var fileBuffer = Data()
+        let originalIV: Data
+        let key: Data
+        var packetCount: Int = 0
+        var ivIncrementor: Int = 0x1F
+    }
     
     // MARK: - Private Properties
     
@@ -36,7 +54,12 @@ final class FileTransferManager: ObservableObject {
     private var currentData: Data?
     private var currentHandle: FileHandle?
     private var bytesSent: Int = 0
+    private var packetIndex: UInt8 = 0
+    private var fullCRC32: UInt32 = 0
     private var transferContinuation: CheckedContinuation<Void, Error>?
+    private var readState: EncryptedReadState?
+    private var readContinuation: CheckedContinuation<Data, Error>?
+    private var readTimeoutTask: Task<Void, Never>?
 
     // MTU for data packets (iOS typically negotiates 185-517)
     // Leave room for BLE overhead
@@ -70,6 +93,8 @@ final class FileTransferManager: ObservableObject {
         currentData = data
         currentHandle = handle
         bytesSent = 0
+        packetIndex = 0
+        fullCRC32 = data.crc32
         transferState = .sendingHeader
         
         defer {
@@ -183,6 +208,53 @@ final class FileTransferManager: ObservableObject {
         
         print("[FileTransfer] App installed (\(wappData.count) bytes)")
     }
+
+    /// Read battery information from the configuration file
+    /// Source: ConfigurationGetRequest.java#L20-L73 and BatteryConfigItem
+    func readBatteryStatus() async throws -> BatteryStatus {
+        logger.info("Battery", "Requesting battery status from watch")
+
+        let fileData = try await fetchEncryptedFile(for: .configuration)
+
+        guard fileData.count > 16 else {
+            throw FileTransferError.invalidResponse
+        }
+
+        let payloadRange = 12..<(fileData.count - 4)
+        let payload = fileData.subdata(in: payloadRange)
+        var buffer = ByteBuffer(data: payload)
+        var status: BatteryStatus?
+
+        while buffer.remainingBytes > 0 {
+            guard let rawId = buffer.getUInt16(),
+                  let lengthByte = buffer.getUInt8() else {
+                throw FileTransferError.invalidResponse
+            }
+
+            let length = Int(lengthByte)
+            guard let bytes = buffer.getBytes(length) else {
+                throw FileTransferError.invalidResponse
+            }
+
+            if rawId == UInt16(FossilConstants.ConfigItemID.batteryConfig.rawValue) {
+                guard bytes.count == 3 else {
+                    throw FileTransferError.invalidResponse
+                }
+
+                let voltage = UInt16(bytes[0]) | (UInt16(bytes[1]) << 8)
+                let percentage = Int(bytes[2])
+                status = BatteryStatus(percentage: percentage, voltageMillivolts: Int(voltage))
+                break
+            }
+        }
+
+        guard let result = status else {
+            throw FileTransferError.batteryConfigMissing
+        }
+
+        logger.info("Battery", "Battery level \(result.percentage)% (\(result.voltageMillivolts) mV)")
+        return result
+    }
     
     // MARK: - Private Methods
     
@@ -237,7 +309,35 @@ final class FileTransferManager: ObservableObject {
     }
     
     private func handleDataAck(_ data: Data) {
-        // Continue sending more data
+        if data.count == 4 {
+            continueDataTransfer()
+            return
+        }
+
+        guard data.count >= 12 else {
+            failTransfer(with: .invalidResponse)
+            return
+        }
+
+        let handleValue = UInt16(data[1]) | (UInt16(data[2]) << 8)
+        let status = data[3]
+        let receivedCRC = data.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+
+        guard status == 0 else {
+            failTransfer(with: .rejected(status))
+            return
+        }
+
+        if handleValue != currentHandle?.rawValue {
+            failTransfer(with: .invalidResponse)
+            return
+        }
+
+        if receivedCRC != fullCRC32 {
+            failTransfer(with: .invalidResponse)
+            return
+        }
+
         continueDataTransfer()
     }
     
@@ -265,18 +365,19 @@ final class FileTransferManager: ObservableObject {
         if remaining <= 0 {
             // All data sent, wait for completion
             transferState = .closing
+            sendCloseCommand()
             return
         }
         
         // Calculate chunk size
         let chunkSize = min(remaining, mtuSize - 1)  // -1 for packet header
-        let isLastChunk = (bytesSent + chunkSize) >= data.count
         
         // Build data packet
         var packet = Data(capacity: chunkSize + 1)
-        packet.append(isLastChunk ? 0x81 : 0x01)  // 0x80 bit = last packet
+        packet.append(packetIndex)
         packet.append(data.subdata(in: bytesSent..<(bytesSent + chunkSize)))
         
+        packetIndex &+= 1
         bytesSent += chunkSize
         progress = Double(bytesSent) / Double(data.count)
         
@@ -302,6 +403,379 @@ final class FileTransferManager: ObservableObject {
         transferContinuation?.resume(throwing: error)
         transferContinuation = nil
     }
+
+    private func sendCloseCommand() {
+        guard let handle = currentHandle else { return }
+        var buffer = ByteBuffer(capacity: 3)
+        buffer.putUInt8(FossilConstants.Command.fileClose.rawValue)
+        buffer.putUInt16(handle.rawValue)
+
+        Task {
+            do {
+                try await bluetoothManager.write(
+                    data: buffer.data,
+                    to: FossilConstants.characteristicFileOperations
+                )
+            } catch {
+                failTransfer(with: .writeFailed(error))
+            }
+        }
+    }
+
+    // MARK: - Encrypted File Read
+
+    private func fetchEncryptedFile(for handle: FileHandle) async throws -> Data {
+        guard authManager.isAuthenticated else {
+            throw FileTransferError.notAuthenticated
+        }
+
+        guard !isTransferring, readState == nil else {
+            throw FileTransferError.transferInProgress
+        }
+
+        guard let key = authManager.getSecretKey(),
+              let phoneRandom = authManager.getPhoneRandomNumber(),
+              let watchRandom = authManager.getWatchRandomNumber() else {
+            throw FileTransferError.missingEncryptionContext
+        }
+
+        logger.info("Protocol", "Starting encrypted read for \(handle)")
+
+        let iv = AESCrypto.generateFileIV(phoneRandom: phoneRandom, watchRandom: watchRandom)
+        readState = EncryptedReadState(
+            dynamicHandle: nil,
+            lookupExpectedSize: 0,
+            lookupBuffer: Data(),
+            fileSize: 0,
+            fileBuffer: Data(),
+            originalIV: iv,
+            key: key,
+            packetCount: 0,
+            ivIncrementor: 0x1F
+        )
+
+        bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicFileOperations) { [weak self] data in
+            Task { @MainActor in
+                self?.handleEncryptedReadResponse(data)
+            }
+        }
+
+        bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicFileData) { [weak self] data in
+            Task { @MainActor in
+                self?.handleEncryptedReadData(data)
+            }
+        }
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+            self.readContinuation = continuation
+
+            self.readTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                await MainActor.run {
+                    self?.failRead(with: .timeout)
+                }
+            }
+
+            Task { [weak self] in
+                guard let self = self else { return }
+
+                do {
+                    let request = RequestBuilder.buildFileLookupRequest(for: handle)
+                    self.logger.debug("Protocol", "Lookup request: \(request.hexString)")
+                    try await self.bluetoothManager.write(
+                        data: request,
+                        to: FossilConstants.characteristicFileOperations
+                    )
+                    self.logger.info("Protocol", "Lookup request sent for \(handle)")
+                } catch {
+                    await MainActor.run {
+                        self.failRead(with: .writeFailed(error))
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleEncryptedReadResponse(_ data: Data) {
+        guard var state = readState, !data.isEmpty else { return }
+
+        let responseType = data[0] & 0x0F
+
+        do {
+            switch state.phase {
+            case .lookup:
+                if let resolvedHandle = try handleLookupResponse(data, responseType: responseType, state: &state) {
+                    readState = state
+                    let major = UInt8((resolvedHandle >> 8) & 0xFF)
+                    let minor = UInt8(resolvedHandle & 0xFF)
+                    sendEncryptedGetRequest(major: major, minor: minor)
+                    return
+                }
+            case .encryptedGet:
+                let shouldComplete = try handleEncryptedGetControl(data, responseType: responseType, state: &state)
+                readState = state
+                if shouldComplete {
+                    completeRead(with: state.fileBuffer)
+                }
+                return
+            }
+        } catch let error as FileTransferError {
+            failRead(with: error)
+            return
+        } catch {
+            failRead(with: .invalidResponse)
+            return
+        }
+
+        readState = state
+    }
+
+    private func handleEncryptedReadData(_ data: Data) {
+        guard var state = readState, !data.isEmpty else { return }
+
+        switch state.phase {
+        case .lookup:
+            if data.count > 1 {
+                state.lookupBuffer.append(data.dropFirst())
+            }
+            if state.lookupExpectedSize > 0, state.lookupBuffer.count > state.lookupExpectedSize {
+                failRead(with: .invalidResponse)
+                return
+            }
+        case .encryptedGet:
+            do {
+                try decryptEncryptedPacket(data, state: &state)
+            } catch let error as FileTransferError {
+                failRead(with: error)
+                return
+            } catch {
+                failRead(with: .invalidResponse)
+                return
+            }
+        }
+
+        readState = state
+    }
+
+    private func handleLookupResponse(_ data: Data, responseType: UInt8, state: inout EncryptedReadState) throws -> UInt16? {
+        switch responseType {
+        case 0x02:
+            guard data.count >= 8 else {
+                throw FileTransferError.invalidResponse
+            }
+
+            let status = data[3]
+            guard status == 0 else {
+                throw FileTransferError.rejected(status)
+            }
+
+            let size = data.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+            guard size > 0 else {
+                throw FileTransferError.emptyFile
+            }
+
+            state.lookupExpectedSize = Int(size)
+            state.lookupBuffer.reserveCapacity(Int(size))
+            logger.debug("Protocol", "Lookup expects \(size) bytes")
+            return nil
+
+        case 0x08:
+            guard data.count >= 12 else {
+                throw FileTransferError.invalidResponse
+            }
+
+            let status = data[3]
+            guard status == 0 else {
+                throw FileTransferError.rejected(status)
+            }
+
+            let expectedCRC = data.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+            let computedCRC = state.lookupBuffer.crc32
+
+            guard expectedCRC == computedCRC else {
+                throw FileTransferError.invalidCRC
+            }
+
+            guard state.lookupBuffer.count >= 2 else {
+                throw FileTransferError.invalidResponse
+            }
+
+            var buffer = ByteBuffer(data: state.lookupBuffer)
+            guard let handleValue = buffer.getUInt16() else {
+                throw FileTransferError.invalidResponse
+            }
+
+            state.dynamicHandle = handleValue
+            state.phase = .encryptedGet
+            state.packetCount = 0
+            state.ivIncrementor = 0x1F
+            state.fileBuffer.removeAll(keepingCapacity: true)
+            state.lookupBuffer.removeAll(keepingCapacity: false)
+
+            logger.info("Protocol", "Lookup resolved handle 0x\(String(format: "%04X", handleValue))")
+            return handleValue
+
+        default:
+            return nil
+        }
+    }
+
+    private func handleEncryptedGetControl(_ data: Data, responseType: UInt8, state: inout EncryptedReadState) throws -> Bool {
+        switch responseType {
+        case FossilConstants.ResponseType.fileGetInit.rawValue:
+            guard data.count >= 8 else {
+                throw FileTransferError.invalidResponse
+            }
+
+            let status = data[3]
+            guard status == 0 else {
+                throw FileTransferError.rejected(status)
+            }
+
+            let minor = data[1]
+            let major = data[2]
+
+            if let expected = state.dynamicHandle {
+                let expectedMinor = UInt8(expected & 0xFF)
+                let expectedMajor = UInt8((expected >> 8) & 0xFF)
+                guard expectedMinor == minor, expectedMajor == major else {
+                    throw FileTransferError.unexpectedHandle
+                }
+            }
+
+            let fileSize = data.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+            state.fileSize = Int(fileSize)
+            state.fileBuffer.removeAll(keepingCapacity: true)
+            state.fileBuffer.reserveCapacity(Int(fileSize))
+            state.packetCount = 0
+
+            logger.info("Protocol", "Encrypted file transfer size: \(fileSize) bytes")
+            return false
+
+        case 0x08:
+            guard data.count >= 12 else {
+                throw FileTransferError.invalidResponse
+            }
+
+            let status = data[3]
+            guard status == 0 else {
+                throw FileTransferError.rejected(status)
+            }
+
+            let expectedCRC = data.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+            let actualCRC = state.fileBuffer.crc32
+
+            guard expectedCRC == actualCRC else {
+                throw FileTransferError.invalidCRC
+            }
+
+            return true
+
+        default:
+            return false
+        }
+    }
+
+    private func decryptEncryptedPacket(_ packet: Data, state: inout EncryptedReadState) throws {
+        let decrypted: Data
+
+        if state.packetCount == 0 {
+            decrypted = try AESCrypto.cryptCTR(data: packet, key: state.key, iv: state.originalIV)
+        } else if state.packetCount == 1 {
+            var resolved: Data?
+
+            for summand in 0x1E...0x2F {
+                let iv = AESCrypto.incrementedIV(from: state.originalIV, by: Int(summand))
+                let candidate = try AESCrypto.cryptCTR(data: packet, key: state.key, iv: iv)
+                guard let header = candidate.first else { continue }
+
+                let projectedLength = state.fileBuffer.count + max(candidate.count - 1, 0)
+                let expectedHeader: UInt8 = projectedLength == state.fileSize ? 0x81 : 0x01
+
+                if header == expectedHeader {
+                    state.ivIncrementor = Int(summand)
+                    resolved = candidate
+                    logger.debug("Protocol", "Resolved IV increment: 0x\(String(format: "%02X", summand))")
+                    break
+                }
+            }
+
+            guard let successful = resolved else {
+                throw FileTransferError.invalidDecryption
+            }
+
+            decrypted = successful
+        } else {
+            let incrementAmount = state.ivIncrementor * state.packetCount
+            let iv = AESCrypto.incrementedIV(from: state.originalIV, by: incrementAmount)
+            decrypted = try AESCrypto.cryptCTR(data: packet, key: state.key, iv: iv)
+        }
+
+        state.packetCount += 1
+
+        guard let header = decrypted.first else {
+            throw FileTransferError.invalidResponse
+        }
+
+        let payload = decrypted.dropFirst()
+        state.fileBuffer.append(payload)
+
+        if header & 0x80 == 0x80 {
+            logger.debug("Protocol", "Last encrypted packet received (\(state.fileBuffer.count) bytes)")
+        }
+    }
+
+    private func sendEncryptedGetRequest(major: UInt8, minor: UInt8) {
+        Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                let request = RequestBuilder.buildFileGetRequest(major: major, minor: minor)
+                self.logger.debug("Protocol", "Encrypted get request: \(request.hexString)")
+                try await self.bluetoothManager.write(
+                    data: request,
+                    to: FossilConstants.characteristicFileOperations
+                )
+                self.logger.info("Protocol", "Encrypted get request sent (major: 0x\(String(format: "%02X", major)), minor: 0x\(String(format: "%02X", minor)))")
+            } catch {
+                await MainActor.run {
+                    self.failRead(with: .writeFailed(error))
+                }
+            }
+        }
+    }
+
+    private func cleanupReadHandlers() {
+        bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicFileOperations)
+        bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicFileData)
+        readTimeoutTask?.cancel()
+        readTimeoutTask = nil
+    }
+
+    private func failRead(with error: FileTransferError) {
+        guard readState != nil else { return }
+
+        logger.error("Protocol", "Encrypted read failed: \(error.localizedDescription)")
+        lastError = error
+        readState = nil
+        cleanupReadHandlers()
+
+        if let continuation = readContinuation {
+            readContinuation = nil
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func completeRead(with data: Data) {
+        logger.info("Protocol", "Encrypted read completed (\(data.count) bytes)")
+        cleanupReadHandlers()
+        readState = nil
+
+        if let continuation = readContinuation {
+            readContinuation = nil
+            continuation.resume(returning: data)
+        }
+    }
 }
 
 // MARK: - Errors
@@ -314,7 +788,13 @@ enum FileTransferError: Error, LocalizedError {
     case rejected(UInt8)
     case writeFailed(Error)
     case fileTooLarge
-    
+    case missingEncryptionContext
+    case invalidCRC
+    case emptyFile
+    case unexpectedHandle
+    case invalidDecryption
+    case batteryConfigMissing
+
     var errorDescription: String? {
         switch self {
         case .transferInProgress:
@@ -331,6 +811,18 @@ enum FileTransferError: Error, LocalizedError {
             return "Write failed: \(error.localizedDescription)"
         case .fileTooLarge:
             return "File is too large for the watch"
+        case .missingEncryptionContext:
+            return "Missing encryption context (secret key or random numbers)"
+        case .invalidCRC:
+            return "CRC mismatch while validating file data"
+        case .emptyFile:
+            return "File is empty"
+        case .unexpectedHandle:
+            return "Received data for unexpected file handle"
+        case .invalidDecryption:
+            return "Could not decrypt file payload"
+        case .batteryConfigMissing:
+            return "Battery configuration item not present in configuration file"
         }
     }
 }

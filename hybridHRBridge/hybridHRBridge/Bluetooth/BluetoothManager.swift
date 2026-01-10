@@ -51,12 +51,18 @@ final class BluetoothManager: NSObject, ObservableObject {
     }
     
     // MARK: - Private Properties
-
+    
     private var centralManager: CBCentralManager!
     private var pendingConnection: CBPeripheral?
     private var characteristicUpdateHandlers: [CBUUID: (Data) -> Void] = [:]
     private var writeCompletionHandler: ((Error?) -> Void)?
-    private let logger = LogManager.shared
+    
+    // MARK: - Computed Properties
+    
+    /// Exposes the CoreBluetooth manager state for UI display
+    var bluetoothState: CBManagerState {
+        centralManager.state
+    }
     
     // MARK: - Initialization
 
@@ -65,144 +71,123 @@ final class BluetoothManager: NSObject, ObservableObject {
         // Use nil queue to run on the main queue, which is required since this class is @MainActor
         // This prevents crashes on iOS 18+ where actor isolation is more strictly enforced
         centralManager = CBCentralManager(delegate: self, queue: nil)
-
-        // Log initialization after the actor context is established
-        Task { @MainActor in
-            logger.info("BLE", "BluetoothManager initialized")
-            logger.debug("BLE", "CBCentralManager created with main queue")
-        }
     }
     
     // MARK: - Public API
     
     /// Start scanning for Fossil Hybrid HR watches
     func startScanning() {
-        logger.info("BLE", "Starting scan for Fossil Hybrid HR watches")
-
         guard centralManager.state == .poweredOn else {
-            logger.error("BLE", "Cannot scan - Bluetooth not powered on (state: \(centralManager.state.rawValue))")
             lastError = .bluetoothNotAvailable
             return
         }
-
+        
         discoveredDevices.removeAll()
         isScanning = true
         connectionState = .scanning
-
-        logger.debug("BLE", "Scanning for service UUID: \(FossilConstants.serviceUUID.uuidString)")
-
+        
         centralManager.scanForPeripherals(
             withServices: [FossilConstants.serviceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
-
-        logger.info("BLE", "Scan started successfully")
+        
+        print("[BLE] Started scanning for Fossil devices")
     }
     
     /// Stop scanning for devices
     func stopScanning() {
-        logger.info("BLE", "Stopping scan")
         centralManager.stopScan()
         isScanning = false
         if connectionState == .scanning {
             connectionState = .disconnected
         }
-        logger.debug("BLE", "Scan stopped, state: \(connectionState)")
+        print("[BLE] Stopped scanning")
     }
     
     /// Connect to a discovered device
     func connect(to device: DiscoveredDevice) {
-        logger.info("BLE", "Initiating connection to \(device.name) (ID: \(device.id))")
-        logger.debug("BLE", "RSSI: \(device.rssi) dBm, Last seen: \(device.lastSeen)")
-
         stopScanning()
         connectionState = .connecting
         pendingConnection = device.peripheral
         device.peripheral.delegate = self
-
+        
         centralManager.connect(device.peripheral, options: [
             CBConnectPeripheralOptionNotifyOnConnectionKey: true,
             CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
         ])
-
-        logger.debug("BLE", "Connection request sent to CoreBluetooth")
+        
+        print("[BLE] Connecting to \(device.name)...")
     }
-
-    /// Connect to a device by UUID (useful for reconnecting to saved devices)
+    
+    /// Connect to a previously known device by UUID
+    /// Used for reconnecting to saved devices
     func connect(toDeviceWithUUID uuid: UUID) {
-        logger.info("BLE", "Attempting to connect to device with UUID: \(uuid)")
-
-        guard centralManager.state == .poweredOn else {
-            logger.error("BLE", "Cannot connect - Bluetooth not powered on")
-            lastError = .bluetoothNotAvailable
-            return
-        }
-
-        // Try to retrieve the peripheral from CoreBluetooth
-        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
-
-        guard let peripheral = peripherals.first else {
-            logger.warning("BLE", "Peripheral with UUID \(uuid) not found - starting scan")
-            // If we can't retrieve it, we need to scan for it first
-            lastError = .deviceNotFound
-            startScanning()
-            return
-        }
-
-        logger.info("BLE", "Found peripheral: \(peripheral.name ?? "Unknown")")
         stopScanning()
         connectionState = .connecting
-        pendingConnection = peripheral
-        peripheral.delegate = self
-
-        centralManager.connect(peripheral, options: [
-            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
-        ])
-
-        logger.debug("BLE", "Connection request sent to CoreBluetooth for saved device")
+        
+        // Try to retrieve the peripheral from Core Bluetooth's cache
+        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+        
+        if let peripheral = peripherals.first {
+            print("[BLE] Found cached peripheral for UUID \(uuid), connecting...")
+            pendingConnection = peripheral
+            peripheral.delegate = self
+            
+            centralManager.connect(peripheral, options: [
+                CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+            ])
+        } else {
+            // Peripheral not in cache, try to find it via connected peripherals with our service
+            let connectedPeripherals = centralManager.retrieveConnectedPeripherals(withServices: [FossilConstants.serviceUUID])
+            
+            if let peripheral = connectedPeripherals.first(where: { $0.identifier == uuid }) {
+                print("[BLE] Found connected peripheral for UUID \(uuid), connecting...")
+                pendingConnection = peripheral
+                peripheral.delegate = self
+                
+                centralManager.connect(peripheral, options: [
+                    CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+                    CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+                ])
+            } else {
+                print("[BLE] Could not find peripheral for UUID \(uuid), starting scan...")
+                // Start scanning to find the device
+                lastError = .deviceNotFound(uuid)
+                connectionState = .disconnected
+            }
+        }
     }
     
     /// Disconnect from the current device
     func disconnect() {
-        guard let device = connectedDevice else {
-            logger.warning("BLE", "Disconnect called but no device connected")
-            return
-        }
-        logger.info("BLE", "Disconnecting from \(device.name)")
+        guard let device = connectedDevice else { return }
         connectionState = .disconnecting
         centralManager.cancelPeripheralConnection(device.peripheral)
+        print("[BLE] Disconnecting...")
     }
     
     /// Write data to a characteristic
     func write(data: Data, to characteristic: CBUUID, type: CBCharacteristicWriteType = .withResponse) async throws {
-        logger.debug("BLE", "Writing \(data.count) bytes to characteristic \(characteristic.uuidString)")
-        logger.debug("BLE", "Data: \(data.hexString)")
-        logger.debug("BLE", "Write type: \(type == .withResponse ? "withResponse" : "withoutResponse")")
-
         guard let device = connectedDevice,
               let char = device.characteristics[characteristic] else {
-            logger.error("BLE", "Characteristic \(characteristic.uuidString) not found")
             throw BluetoothError.characteristicNotFound
         }
-
+        
         return try await withCheckedThrowingContinuation { continuation in
             if type == .withResponse {
                 writeCompletionHandler = { error in
                     if let error = error {
-                        self.logger.error("BLE", "Write failed: \(error.localizedDescription)")
                         continuation.resume(throwing: BluetoothError.writeFailed(error))
                     } else {
-                        self.logger.debug("BLE", "Write completed successfully")
                         continuation.resume()
                     }
                 }
             }
-
+            
             device.peripheral.writeValue(data, for: char, type: type)
-
+            
             if type == .withoutResponse {
-                logger.debug("BLE", "Write without response completed")
                 continuation.resume()
             }
         }
@@ -210,22 +195,22 @@ final class BluetoothManager: NSObject, ObservableObject {
     
     /// Register a handler for characteristic notifications
     func registerNotificationHandler(for characteristic: CBUUID, handler: @escaping (Data) -> Void) {
-        logger.debug("BLE", "Registering notification handler for \(characteristic.uuidString)")
         characteristicUpdateHandlers[characteristic] = handler
     }
 
+    /// Remove a previously registered notification handler
+    func unregisterNotificationHandler(for characteristic: CBUUID) {
+        characteristicUpdateHandlers.removeValue(forKey: characteristic)
+    }
+    
     /// Enable notifications for a characteristic
     func enableNotifications(for characteristic: CBUUID) async throws {
-        logger.info("BLE", "Enabling notifications for \(characteristic.uuidString)")
-
         guard let device = connectedDevice,
               let char = device.characteristics[characteristic] else {
-            logger.error("BLE", "Characteristic \(characteristic.uuidString) not found for notifications")
             throw BluetoothError.characteristicNotFound
         }
-
+        
         device.peripheral.setNotifyValue(true, for: char)
-        logger.debug("BLE", "Notification enable request sent")
     }
     
     /// Request a larger MTU for efficient transfers
@@ -241,27 +226,21 @@ extension BluetoothManager: CBCentralManagerDelegate {
     
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
-            logger.info("BLE", "Bluetooth state changed to: \(central.state.rawValue)")
-
             switch central.state {
             case .poweredOn:
-                logger.info("BLE", "✅ Bluetooth powered on and ready")
+                print("[BLE] Bluetooth powered on")
             case .poweredOff:
-                logger.warning("BLE", "⚠️ Bluetooth powered off")
+                print("[BLE] Bluetooth powered off")
                 lastError = .bluetoothPoweredOff
                 connectionState = .disconnected
             case .unauthorized:
-                logger.error("BLE", "❌ Bluetooth unauthorized - check app permissions")
+                print("[BLE] Bluetooth unauthorized")
                 lastError = .bluetoothUnauthorized
             case .unsupported:
-                logger.error("BLE", "❌ Bluetooth unsupported on this device")
+                print("[BLE] Bluetooth unsupported")
                 lastError = .bluetoothUnsupported
-            case .resetting:
-                logger.warning("BLE", "⚠️ Bluetooth is resetting")
-            case .unknown:
-                logger.debug("BLE", "Bluetooth state unknown")
-            @unknown default:
-                logger.warning("BLE", "Unknown Bluetooth state: \(central.state.rawValue)")
+            default:
+                break
             }
         }
     }
@@ -269,11 +248,10 @@ extension BluetoothManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         Task { @MainActor in
             let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown Device"
-
+            
             if let index = discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
                 // Update existing device
                 discoveredDevices[index].lastSeen = Date()
-                logger.debug("BLE", "Updated device: \(name) (RSSI: \(RSSI))")
             } else {
                 // Add new device
                 let device = DiscoveredDevice(
@@ -284,23 +262,20 @@ extension BluetoothManager: CBCentralManagerDelegate {
                     lastSeen: Date()
                 )
                 discoveredDevices.append(device)
-                logger.info("BLE", "📱 Discovered: \(name) (RSSI: \(RSSI), ID: \(peripheral.identifier))")
-                logger.debug("BLE", "Advertisement data: \(advertisementData)")
+                print("[BLE] Discovered: \(name) (RSSI: \(RSSI))")
             }
         }
     }
     
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
-            logger.info("BLE", "✅ Connected to \(peripheral.name ?? "Unknown") (ID: \(peripheral.identifier))")
+            print("[BLE] Connected to \(peripheral.name ?? "Unknown")")
             connectionState = .discovering
             connectedDevice = ConnectedDevice(
                 peripheral: peripheral,
                 name: peripheral.name ?? "Fossil Watch"
             )
-
-            logger.info("BLE", "Starting service discovery...")
-            logger.debug("BLE", "Looking for service UUID: \(FossilConstants.serviceUUID.uuidString)")
+            
             // Discover services
             peripheral.discoverServices([FossilConstants.serviceUUID])
         }
@@ -308,11 +283,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            logger.error("BLE", "❌ Failed to connect to \(peripheral.name ?? "Unknown")")
-            if let error = error {
-                logger.error("BLE", "Connection error: \(error.localizedDescription)")
-                logger.debug("BLE", "Error details: \(error)")
-            }
+            print("[BLE] Failed to connect: \(error?.localizedDescription ?? "Unknown error")")
             lastError = .connectionFailed(error)
             connectionState = .disconnected
             pendingConnection = nil
@@ -321,19 +292,26 @@ extension BluetoothManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            logger.info("BLE", "Disconnected from \(peripheral.name ?? "Unknown")")
-            if let error = error {
-                logger.warning("BLE", "Disconnection was unexpected: \(error.localizedDescription)")
-                logger.debug("BLE", "Disconnect error details: \(error)")
-                lastError = .disconnected(error)
-            } else {
-                logger.info("BLE", "Clean disconnection")
-            }
-
+            print("[BLE] Disconnected from \(peripheral.name ?? "Unknown")")
             connectedDevice = nil
             connectionState = .disconnected
             characteristicUpdateHandlers.removeAll()
-            logger.debug("BLE", "Cleared \(characteristicUpdateHandlers.count) notification handlers")
+            
+            if let error = error {
+                lastError = .disconnected(error)
+            }
+        }
+    }
+    
+    nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        // Handle state restoration for background operation
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            Task { @MainActor in
+                for peripheral in peripherals {
+                    print("[BLE] Restored peripheral: \(peripheral.name ?? "Unknown")")
+                    peripheral.delegate = self
+                }
+            }
         }
     }
 }
@@ -345,24 +323,16 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
             if let error = error {
-                logger.error("BLE", "Service discovery failed: \(error.localizedDescription)")
-                logger.debug("BLE", "Service discovery error details: \(error)")
+                print("[BLE] Service discovery error: \(error)")
                 lastError = .serviceDiscoveryFailed(error)
                 return
             }
-
-            guard let services = peripheral.services else {
-                logger.warning("BLE", "No services discovered")
-                return
-            }
-
-            logger.info("BLE", "Discovered \(services.count) service(s)")
-
+            
+            guard let services = peripheral.services else { return }
+            
             for service in services {
-                logger.info("BLE", "Service found: \(service.uuid.uuidString)")
+                print("[BLE] Discovered service: \(service.uuid)")
                 if service.uuid == FossilConstants.serviceUUID {
-                    logger.info("BLE", "Found Fossil service! Discovering characteristics...")
-                    logger.debug("BLE", "Looking for \(FossilConstants.allCharacteristics.count) characteristics")
                     peripheral.discoverCharacteristics(FossilConstants.allCharacteristics, for: service)
                 }
             }
@@ -372,42 +342,28 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                logger.error("BLE", "Characteristic discovery failed: \(error.localizedDescription)")
-                logger.debug("BLE", "Characteristic discovery error details: \(error)")
+                print("[BLE] Characteristic discovery error: \(error)")
                 lastError = .characteristicDiscoveryFailed(error)
                 return
             }
-
-            guard let characteristics = service.characteristics else {
-                logger.warning("BLE", "No characteristics discovered for service \(service.uuid.uuidString)")
-                return
-            }
-
-            logger.info("BLE", "Discovered \(characteristics.count) characteristic(s) for service \(service.uuid.uuidString)")
-
+            
+            guard let characteristics = service.characteristics else { return }
+            
             for characteristic in characteristics {
-                logger.info("BLE", "Characteristic: \(characteristic.uuid.uuidString)")
-                logger.debug("BLE", "  Properties: \(characteristic.properties)")
+                print("[BLE] Discovered characteristic: \(characteristic.uuid)")
                 connectedDevice?.characteristics[characteristic.uuid] = characteristic
-
+                
                 // Enable notifications for characteristics that support it
                 if characteristic.properties.contains(.notify) {
-                    logger.debug("BLE", "  Enabling notifications for \(characteristic.uuid.uuidString)")
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
             }
-
+            
             // Check if we have all characteristics
             if connectedDevice?.isReady == true {
-                logger.info("BLE", "✅ All required characteristics discovered - device ready!")
-                let charList = connectedDevice?.characteristics.keys.map { $0.uuidString }.joined(separator: ", ") ?? ""
-                logger.debug("BLE", "Available characteristics: \(charList)")
+                print("[BLE] All characteristics discovered, device ready")
                 connectionState = .authenticating
                 // Authentication will be handled by AuthenticationManager
-            } else {
-                let missing = FossilConstants.allCharacteristics.filter { connectedDevice?.characteristics[$0] == nil }
-                logger.warning("BLE", "Still missing \(missing.count) required characteristic(s)")
-                logger.debug("BLE", "Missing: \(missing.map { $0.uuidString }.joined(separator: ", "))")
             }
         }
     }
@@ -415,23 +371,17 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                logger.error("BLE", "Characteristic read error for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
+                print("[BLE] Characteristic update error: \(error)")
                 return
             }
-
-            guard let data = characteristic.value else {
-                logger.warning("BLE", "No data in characteristic update for \(characteristic.uuid.uuidString)")
-                return
-            }
-
-            logger.debug("BLE", "📨 Received \(data.count) bytes from \(characteristic.uuid.uuidString)")
-            logger.debug("BLE", "Data: \(data.hexString)")
-
+            
+            guard let data = characteristic.value else { return }
+            
+            print("[BLE] Received from \(characteristic.uuid): \(data.hexString)")
+            
             // Call registered handler
             if let handler = characteristicUpdateHandlers[characteristic.uuid] {
                 handler(data)
-            } else {
-                logger.warning("BLE", "No handler registered for \(characteristic.uuid.uuidString)")
             }
         }
     }
@@ -439,12 +389,11 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                logger.error("BLE", "Write failed for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
-                logger.debug("BLE", "Write error details: \(error)")
+                print("[BLE] Write error: \(error)")
             } else {
-                logger.debug("BLE", "✅ Write successful to \(characteristic.uuid.uuidString)")
+                print("[BLE] Write successful to \(characteristic.uuid)")
             }
-
+            
             writeCompletionHandler?(error)
             writeCompletionHandler = nil
         }
@@ -453,11 +402,9 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                logger.error("BLE", "Notification state update failed for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
-                logger.debug("BLE", "Notification error details: \(error)")
+                print("[BLE] Notification state error for \(characteristic.uuid): \(error)")
             } else {
-                let state = characteristic.isNotifying ? "enabled" : "disabled"
-                logger.info("BLE", "Notifications \(state) for \(characteristic.uuid.uuidString)")
+                print("[BLE] Notifications \(characteristic.isNotifying ? "enabled" : "disabled") for \(characteristic.uuid)")
             }
         }
     }
@@ -477,8 +424,8 @@ enum BluetoothError: Error, LocalizedError {
     case characteristicNotFound
     case writeFailed(Error)
     case timeout
-    case deviceNotFound
-
+    case deviceNotFound(UUID)
+    
     var errorDescription: String? {
         switch self {
         case .bluetoothNotAvailable:
@@ -503,8 +450,8 @@ enum BluetoothError: Error, LocalizedError {
             return "Write failed: \(error.localizedDescription)"
         case .timeout:
             return "Operation timed out"
-        case .deviceNotFound:
-            return "Device not found - scanning..."
+        case .deviceNotFound(let uuid):
+            return "Device not found: \(uuid)"
         }
     }
 }

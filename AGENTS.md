@@ -94,11 +94,11 @@ final class MyManager {
 
 ## External References
 
-ALWAYS CROSS  REFERENCES WITH A RELIABLE PRIMARY SOURCE BEFORE ANY CHANGE!
+ALWAYS CROSS REFERENCE WITH A RELIABLE PRIMARY SOURCE BEFORE ANY CHANGE!
 
 - **Gadgetbridge Source**: https://codeberg.org/Freeyourgadget/Gadgetbridge
-  - Local clone at `/Users/jospicer/dev/Gadgetbridge` or `/Users/josh/git/Gadgetbridge`
-  - Key path: `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/`
+  - Local clone at `/Users/josh/git/Gadgetbridge`
+  - One Key path: `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/`
 - **Fossil HR SDK**: https://github.com/dakhnod/Fossil-HR-SDK (for building custom watch apps)
 - **Apple Docs**: Use the `apple-developer-docs-mcp` to fetch iOS specific information (eg: bluetooth classes, etc.)
 
