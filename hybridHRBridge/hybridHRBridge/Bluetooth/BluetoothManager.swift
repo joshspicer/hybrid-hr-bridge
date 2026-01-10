@@ -43,10 +43,26 @@ final class BluetoothManager: NSObject, ObservableObject {
         let peripheral: CBPeripheral
         let name: String
         var characteristics: [CBUUID: CBCharacteristic] = [:]
+        var notificationsEnabled: Set<CBUUID> = []
         
         var isReady: Bool {
             // Check we have all required characteristics
             FossilConstants.allCharacteristics.allSatisfy { characteristics[$0] != nil }
+        }
+        
+        /// Returns true when all characteristics that support notifications/indications have them enabled
+        var isNotificationsReady: Bool {
+            guard isReady else { return false }
+            // Check if all indication/notify characteristics have confirmed notification state
+            for uuid in FossilConstants.allCharacteristics {
+                guard let char = characteristics[uuid] else { return false }
+                if char.properties.contains(.notify) || char.properties.contains(.indicate) {
+                    if !notificationsEnabled.contains(uuid) {
+                        return false
+                    }
+                }
+            }
+            return true
         }
     }
     
@@ -55,7 +71,8 @@ final class BluetoothManager: NSObject, ObservableObject {
     private var centralManager: CBCentralManager!
     private var pendingConnection: CBPeripheral?
     private var characteristicUpdateHandlers: [CBUUID: (Data) -> Void] = [:]
-    private var writeCompletionHandler: ((Error?) -> Void)?
+    private var writeCompletions: [CBUUID: (Error?) -> Void] = [:]  // Track writes per characteristic
+    private var hasTransitionedToAuthenticating = false  // Prevent duplicate authentication triggers
     
     // MARK: - Computed Properties
     
@@ -197,11 +214,23 @@ final class BluetoothManager: NSObject, ObservableObject {
             }
         }
         
+        // Check if there's already a pending write to this characteristic
+        if writeCompletions[characteristic] != nil {
+            print("[BLE] Warning: write already pending for \(characteristic), waiting...")
+            // Wait a bit for the pending write to complete
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            if writeCompletions[characteristic] != nil {
+                print("[BLE] Cancelling stale write completion for \(characteristic)")
+                writeCompletions.removeValue(forKey: characteristic)
+            }
+        }
+        
         print("[BLE] Writing \(data.count) bytes to \(characteristic) (type: \(actualType == .withResponse ? "withResponse" : "withoutResponse"))")
         
         return try await withCheckedThrowingContinuation { continuation in
             if actualType == .withResponse {
-                writeCompletionHandler = { error in
+                writeCompletions[characteristic] = { [weak self] error in
+                    self?.writeCompletions.removeValue(forKey: characteristic)
                     if let error = error {
                         continuation.resume(throwing: BluetoothError.writeFailed(error))
                     } else {
@@ -321,6 +350,8 @@ extension BluetoothManager: CBCentralManagerDelegate {
             connectedDevice = nil
             connectionState = .disconnected
             characteristicUpdateHandlers.removeAll()
+            writeCompletions.removeAll()
+            hasTransitionedToAuthenticating = false
             
             if let error = error {
                 lastError = .disconnected(error)
@@ -375,20 +406,30 @@ extension BluetoothManager: CBPeripheralDelegate {
             guard let characteristics = service.characteristics else { return }
             
             for characteristic in characteristics {
-                print("[BLE] Discovered characteristic: \(characteristic.uuid)")
+                // Log characteristic properties to help debug write type issues
+                var props: [String] = []
+                if characteristic.properties.contains(.read) { props.append("read") }
+                if characteristic.properties.contains(.write) { props.append("write") }
+                if characteristic.properties.contains(.writeWithoutResponse) { props.append("writeWithoutResponse") }
+                if characteristic.properties.contains(.notify) { props.append("notify") }
+                if characteristic.properties.contains(.indicate) { props.append("indicate") }
+                print("[BLE] Discovered characteristic: \(characteristic.uuid) [\(props.joined(separator: ", "))]")
+                
                 connectedDevice?.characteristics[characteristic.uuid] = characteristic
                 
-                // Enable notifications for characteristics that support it
-                if characteristic.properties.contains(.notify) {
+                // Enable notifications/indications for characteristics that support it
+                // Note: Some Fossil characteristics use .indicate instead of .notify
+                // setNotifyValue works for both - the system handles the difference
+                if characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) {
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
             }
             
             // Check if we have all characteristics
+            // Note: We wait until didUpdateNotificationStateFor confirms all notifications
+            // are enabled before declaring the device ready
             if connectedDevice?.isReady == true {
-                print("[BLE] All characteristics discovered, device ready")
-                connectionState = .authenticating
-                // Authentication will be handled by AuthenticationManager
+                print("[BLE] All characteristics discovered, waiting for notification states...")
             }
         }
     }
@@ -414,13 +455,17 @@ extension BluetoothManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error = error {
-                print("[BLE] Write error: \(error)")
+                print("[BLE] Write error for \(characteristic.uuid): \(error)")
             } else {
                 print("[BLE] Write successful to \(characteristic.uuid)")
             }
             
-            writeCompletionHandler?(error)
-            writeCompletionHandler = nil
+            // Call the completion handler for this specific characteristic
+            if let completion = writeCompletions[characteristic.uuid] {
+                completion(error)
+            } else {
+                print("[BLE] Warning: No completion handler for write to \(characteristic.uuid)")
+            }
         }
     }
     
@@ -430,6 +475,19 @@ extension BluetoothManager: CBPeripheralDelegate {
                 print("[BLE] Notification state error for \(characteristic.uuid): \(error)")
             } else {
                 print("[BLE] Notifications \(characteristic.isNotifying ? "enabled" : "disabled") for \(characteristic.uuid)")
+                
+                // Track enabled notifications
+                if characteristic.isNotifying {
+                    connectedDevice?.notificationsEnabled.insert(characteristic.uuid)
+                    
+                    // Check if we're now fully ready (all characteristics + all notifications)
+                    // Only trigger authentication transition ONCE
+                    if !hasTransitionedToAuthenticating && connectedDevice?.isNotificationsReady == true {
+                        hasTransitionedToAuthenticating = true
+                        print("[BLE] All notifications enabled, device ready for authentication")
+                        connectionState = .authenticating
+                    }
+                }
             }
         }
     }

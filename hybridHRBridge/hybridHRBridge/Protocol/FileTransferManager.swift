@@ -79,6 +79,81 @@ final class FileTransferManager: ObservableObject {
     
     // MARK: - Public API
     
+    /// Initialize the file operations channel with a file lookup request (command 0x02)
+    /// HR watches use FileLookupRequest BEFORE authentication for listApplications()
+    /// Source: FossilHRWatchAdapter.java#L263 - listApplications() calls ApplicationsListRequest
+    /// Source: ApplicationsListRequest.java - extends FileLookupAndGetRequest (command 0x02)
+    /// This initializes the 0x02 command pathway before authentication
+    func initializeFileOperations() async throws {
+        logger.info("Protocol", "Initializing file operations channel with file lookup (command 0x02)...")
+        
+        // Send a FileLookupRequest (command 0x02) for APP_CODE like listApplications() does
+        // This is what Gadgetbridge does BEFORE authentication to initialize the 0x02 command pathway
+        // Source: FileLookupRequest.java - getStartSequence returns {2, 0xFF}
+        // Payload: [0x02] [0xFF] [major]
+        let appCodeHandle = FileHandle.appCode
+        let request = Data([0x02, 0xFF, appCodeHandle.major])
+        
+        logger.debug("Protocol", "App list lookup request: \(request.hexString)")
+        
+        // Track if we get any responses
+        var responsesReceived = 0
+        
+        // Register handler to receive the lookup response
+        bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicFileOperations) { [weak self] data in
+            self?.logger.debug("Protocol", "📥 Init response on 3dda0003: \(data.hexString)")
+            responsesReceived += 1
+        }
+        
+        bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicFileData) { [weak self] data in
+            self?.logger.debug("Protocol", "📥 Init data on 3dda0004: \(data.count) bytes")
+            responsesReceived += 1
+        }
+        
+        do {
+            try await bluetoothManager.write(
+                data: request,
+                to: FossilConstants.characteristicFileOperations,
+                type: .withResponse
+            )
+            
+            logger.info("Protocol", "✅ App list lookup request sent successfully")
+        } catch {
+            logger.warning("Protocol", "App list lookup failed: \(error.localizedDescription)")
+            // Don't throw - we'll try the old FileGet method as fallback
+            
+            // Try FileGetRawRequest (0x01) for DEVICE_INFO as fallback
+            logger.info("Protocol", "Trying FileGet fallback with DEVICE_INFO...")
+            let deviceInfoHandle = FileHandle.deviceInfo
+            var buffer = ByteBuffer(capacity: 11)
+            buffer.putUInt8(0x01)  // FileGet command
+            buffer.putUInt8(deviceInfoHandle.minor)
+            buffer.putUInt8(deviceInfoHandle.major)
+            buffer.putUInt32(0)  // Start offset
+            buffer.putUInt32(0xFFFFFFFF)  // End offset (entire file)
+            
+            try await bluetoothManager.write(
+                data: buffer.data,
+                to: FossilConstants.characteristicFileOperations,
+                type: .withResponse
+            )
+            logger.info("Protocol", "✅ Device info request sent successfully")
+        }
+        
+        // Wait for responses to arrive
+        try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+        
+        // Unregister handlers - we don't need the actual data
+        bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicFileOperations)
+        bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicFileData)
+        
+        if responsesReceived > 0 {
+            logger.info("Protocol", "✅ File operations channel initialized (\(responsesReceived) responses)")
+        } else {
+            logger.warning("Protocol", "No responses received during init, continuing anyway...")
+        }
+    }
+    
     /// Put a file to the watch
     /// - Parameters:
     ///   - data: The file data to transfer
@@ -231,40 +306,64 @@ final class FileTransferManager: ObservableObject {
         logger.info("Battery", "Requesting battery status from watch")
 
         let fileData = try await fetchEncryptedFile(for: .configuration)
+        logger.debug("Battery", "Received configuration file: \(fileData.count) bytes")
+        logger.debug("Battery", "Full file (hex): \(fileData.hexString)")
 
         guard fileData.count > 16 else {
             throw FileTransferError.invalidResponse
         }
 
+        // Source: fossil_hr/configuration/ConfigurationGetRequest.java#L40-42
+        // Skip first 12 bytes (header) and last 4 bytes (CRC/trailer)
         let payloadRange = 12..<(fileData.count - 4)
         let payload = fileData.subdata(in: payloadRange)
+        logger.debug("Battery", "Payload (after header/trailer strip): \(payload.count) bytes")
+        logger.debug("Battery", "Payload (hex): \(payload.hexString)")
+        
         var buffer = ByteBuffer(data: payload)
         var status: BatteryStatus?
+        var itemCount = 0
 
         while buffer.remainingBytes > 0 {
             guard let rawId = buffer.getUInt16(),
                   let lengthByte = buffer.getUInt8() else {
-                throw FileTransferError.invalidResponse
+                logger.warning("Battery", "Couldn't read item header at offset \(itemCount)")
+                break
             }
 
             let length = Int(lengthByte)
+            itemCount += 1
+            
+            logger.debug("Battery", "Item \(itemCount): ID=0x\(String(format: "%04X", rawId)), length=\(length)")
+            
             guard let bytes = buffer.getBytes(length) else {
-                throw FileTransferError.invalidResponse
+                logger.warning("Battery", "Couldn't read \(length) bytes for item 0x\(String(format: "%04X", rawId))")
+                break
             }
 
-            if rawId == UInt16(FossilConstants.ConfigItemID.batteryConfig.rawValue) {
-                guard bytes.count == 3 else {
-                    throw FileTransferError.invalidResponse
+            // Battery config item ID is 0x0D
+            if rawId == 0x0D {
+                logger.info("Battery", "Found battery config item!")
+                logger.debug("Battery", "Battery bytes: \(Data(bytes).hexString)")
+                // Gadgetbridge expects 3 bytes, but some watches send 4 (extra state byte)
+                guard bytes.count >= 3 else {
+                    logger.warning("Battery", "Battery data too short: \(bytes.count) bytes (need at least 3)")
+                    continue
                 }
 
                 let voltage = UInt16(bytes[0]) | (UInt16(bytes[1]) << 8)
                 let percentage = Int(bytes[2])
                 status = BatteryStatus(percentage: percentage, voltageMillivolts: Int(voltage))
+                logger.info("Battery", "Battery: \(percentage)% at \(voltage) mV")
+                if bytes.count > 3 {
+                    logger.debug("Battery", "Extra battery byte: 0x\(String(format: "%02X", bytes[3])) (state?)")
+                }
                 break
             }
         }
 
         guard let result = status else {
+            logger.warning("Battery", "Battery config item (0x0D) not found in \(itemCount) items")
             throw FileTransferError.batteryConfigMissing
         }
 
@@ -442,6 +541,9 @@ final class FileTransferManager: ObservableObject {
 
     /// Fetch an encrypted file from the watch (public API for other managers)
     /// This performs a file lookup followed by an encrypted get request
+    /// Source: FossilHRWatchAdapter.java#L1166-1182 - queueWrite(FileEncryptedInterface) calls VerifyPrivateKeyRequest first
+    /// CRITICAL: In Gadgetbridge, VerifyPrivateKeyRequest is called IMMEDIATELY before each encrypted file operation
+    /// The auth must complete, then the file operation starts right after without any other requests in between
     func fetchEncryptedFile(for handle: FileHandle) async throws -> Data {
         logger.info("Protocol", "=== Starting encrypted file fetch for \(handle) ===")
         
@@ -461,11 +563,18 @@ final class FileTransferManager: ObservableObject {
             isOperationInProgress = false
             logger.debug("Protocol", "Operation complete, releasing lock")
         }
-
+        
+        // CRITICAL: Do VerifyPrivateKeyRequest (re-auth) IMMEDIATELY before the encrypted file operation
+        // This is exactly how Gadgetbridge does it - the auth generates fresh randoms that are used for encryption
+        // Source: FossilHRWatchAdapter.java queueWrite(FileEncryptedInterface) - always does VerifyPrivateKeyRequest first
+        //
+        // EXPERIMENTAL: Skipping re-auth to see if it's causing the ATT error 14
+        // Using randoms from the initial authentication instead
+        logger.info("Protocol", "EXPERIMENTAL: Skipping VerifyPrivateKeyRequest, using existing auth state")
         guard let key = authManager.getSecretKey(),
               let phoneRandom = authManager.getPhoneRandomNumber(),
               let watchRandom = authManager.getWatchRandomNumber() else {
-            logger.error("Protocol", "Missing encryption context")
+            logger.error("Protocol", "Missing encryption context after verify")
             throw FileTransferError.missingEncryptionContext
         }
 
@@ -503,6 +612,10 @@ final class FileTransferManager: ObservableObject {
                 self?.handleEncryptedReadData(data)
             }
         }
+        
+        // Note: Notifications were already enabled during connection setup
+        // Don't call enableNotifications again - that can cause issues with the BLE stack
+        logger.debug("Protocol", "Using existing notification handlers...")
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             self.readContinuation = continuation
@@ -520,10 +633,10 @@ final class FileTransferManager: ObservableObject {
             Task { [weak self] in
                 guard let self = self else { return }
 
-                // Small delay to ensure notifications are fully registered
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-
                 do {
+                    // Use FileLookupRequest for all handles
+                    // After pairing, the watch should allow encrypted file access
+                    // Source: FileEncryptedLookupAndGetRequest.java - always does lookup first
                     let request = RequestBuilder.buildFileLookupRequest(for: handle)
                     self.logger.info("Protocol", "📤 Sending lookup request: \(request.hexString)")
                     try await self.bluetoothManager.write(
@@ -726,8 +839,17 @@ final class FileTransferManager: ObservableObject {
 
             let expectedCRC = data.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
             let actualCRC = state.fileBuffer.crc32
+            
+            logger.debug("Protocol", "CRC validation: expected=0x\(String(format: "%08X", expectedCRC)), actual=0x\(String(format: "%08X", actualCRC))")
+            logger.debug("Protocol", "File buffer size: \(state.fileBuffer.count) bytes, expected: \(state.fileSize) bytes")
+            
+            if state.fileBuffer.count > 0 {
+                let firstBytes = state.fileBuffer.prefix(min(16, state.fileBuffer.count))
+                logger.debug("Protocol", "File buffer first bytes: \(firstBytes.hexString)")
+            }
 
             guard expectedCRC == actualCRC else {
+                logger.error("Protocol", "CRC mismatch! Expected: 0x\(String(format: "%08X", expectedCRC)), Got: 0x\(String(format: "%08X", actualCRC))")
                 throw FileTransferError.invalidCRC
             }
 
@@ -739,9 +861,13 @@ final class FileTransferManager: ObservableObject {
     }
 
     private func decryptEncryptedPacket(_ packet: Data, state: inout EncryptedReadState) throws {
+        logger.debug("Protocol", "Decrypting packet \(state.packetCount): \(packet.count) bytes")
+        logger.debug("Protocol", "Packet header: 0x\(String(format: "%02X", packet.first ?? 0))")
+        
         let decrypted: Data
 
         if state.packetCount == 0 {
+            logger.debug("Protocol", "Using original IV for first packet")
             decrypted = try AESCrypto.cryptCTR(data: packet, key: state.key, iv: state.originalIV)
         } else if state.packetCount == 1 {
             var resolved: Data?
@@ -770,6 +896,7 @@ final class FileTransferManager: ObservableObject {
         } else {
             let incrementAmount = state.ivIncrementor * state.packetCount
             let iv = AESCrypto.incrementedIV(from: state.originalIV, by: incrementAmount)
+            logger.debug("Protocol", "Using IV increment \(incrementAmount) for packet \(state.packetCount)")
             decrypted = try AESCrypto.cryptCTR(data: packet, key: state.key, iv: iv)
         }
 
@@ -778,6 +905,8 @@ final class FileTransferManager: ObservableObject {
         guard let header = decrypted.first else {
             throw FileTransferError.invalidResponse
         }
+        
+        logger.debug("Protocol", "Decrypted header: 0x\(String(format: "%02X", header)), payload size: \(decrypted.count - 1)")
 
         let payload = decrypted.dropFirst()
         state.fileBuffer.append(payload)

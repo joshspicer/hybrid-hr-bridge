@@ -98,6 +98,13 @@ final class WatchManager: ObservableObject {
     
     /// Authenticate with the connected watch using stored key
     func authenticate() async throws {
+        // Skip if auth manager indicates authentication is already in progress or complete
+        if authManager.isAuthenticated {
+            logger.info("WatchManager", "Already authenticated, skipping authentication")
+            connectionStatus = .connected
+            return
+        }
+        
         guard let watch = connectedWatch, let key = watch.secretKey else {
             throw WatchManagerError.noSecretKey
         }
@@ -325,14 +332,23 @@ final class WatchManager: ObservableObject {
             connectionStatus = .scanning
         case .connecting:
             connectionStatus = .connecting
-        case .discovering, .authenticating:
+        case .discovering:
             connectionStatus = .authenticating
-        case .connected:
-            // Set flag to authenticate once device info is available
-            // The actual auth happens in handleDeviceChange after connectedWatch is set
+        case .authenticating:
+            // Characteristics discovered, device is ready - trigger authentication
+            connectionStatus = .authenticating
             pendingAuthentication = true
-            connectionStatus = .authenticating
-            logger.info("WatchManager", "Device connected, waiting for device info before auth...")
+            logger.info("WatchManager", "Device ready (characteristics discovered), will authenticate when device info available...")
+            // Check if device info is already available
+            if connectedWatch != nil {
+                pendingAuthentication = false
+                Task {
+                    await performAutoAuthentication()
+                }
+            }
+        case .connected:
+            // This state is set after successful authentication
+            connectionStatus = .connected
         case .disconnecting:
             connectionStatus = .disconnected
             authManager.resetAuthState()
@@ -381,6 +397,18 @@ final class WatchManager: ObservableObject {
             return
         }
         
+        // Initialize the file operations channel BEFORE authentication
+        // HR watches do NOT use AnimationRequest - they do file operations directly
+        // Source: FossilHRWatchAdapter.java#L257-267 - initialize() calls file operations before auth
+        // TEST: Trying file operations before AND after auth to isolate the issue
+        logger.info("WatchManager", "Initializing file operations channel (TEST before auth)...")
+        do {
+            try await fileTransferManager.initializeFileOperations()
+        } catch {
+            logger.warning("WatchManager", "File operations init failed: \(error.localizedDescription)")
+            // Continue anyway - the watch might work without it
+        }
+        
         guard watch.secretKey != nil else {
             logger.info("WatchManager", "No secret key available for '\(watch.name)' - manual auth required")
             connectionStatus = .connected
@@ -392,6 +420,28 @@ final class WatchManager: ObservableObject {
         do {
             try await authenticate()
             logger.info("WatchManager", "✅ Auto-authentication successful!")
+            
+            // Perform post-auth initialization (confirmation + pairing)
+            // This must happen before accessing encrypted files like CONFIGURATION
+            logger.info("WatchManager", "Performing post-auth initialization (confirmation + pairing)...")
+            do {
+                try await authManager.performPostAuthInitialization()
+                logger.info("WatchManager", "✅ Post-auth initialization complete")
+            } catch {
+                logger.warning("WatchManager", "Post-auth initialization failed: \(error.localizedDescription) - continuing anyway")
+            }
+            
+            // Note: VerifyPrivateKeyRequest (re-auth) will happen right before each encrypted file operation
+            // No need to delay here - the file transfer manager will do its own auth sequence
+            
+            // Automatically fetch battery status after successful authentication
+            logger.info("WatchManager", "Fetching initial battery status...")
+            do {
+                let battery = try await refreshBatteryStatus()
+                logger.info("WatchManager", "✅ Battery: \(battery.percentage)% (\(battery.voltageMillivolts)mV)")
+            } catch {
+                logger.warning("WatchManager", "Failed to fetch initial battery: \(error.localizedDescription)")
+            }
         } catch {
             logger.error("WatchManager", "Auto-auth failed: \(error.localizedDescription)")
             // Stay connected even if auth fails - user can retry manually

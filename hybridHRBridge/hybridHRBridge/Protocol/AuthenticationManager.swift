@@ -33,6 +33,9 @@ final class AuthenticationManager: ObservableObject {
     private var watchRandomNumber: Data?
     private var authContinuation: CheckedContinuation<Void, Error>?
     
+    /// Flag to prevent concurrent authentication attempts
+    private var isAuthenticating = false
+    
     // MARK: - Initialization
     
     init(bluetoothManager: BluetoothManager) {
@@ -63,10 +66,43 @@ final class AuthenticationManager: ObservableObject {
     /// Perform authentication with the watch
     /// This should be called after characteristics are discovered
     func authenticate() async throws {
+        // Prevent concurrent authentication attempts
+        guard !isAuthenticating else {
+            logger.warning("Auth", "Authentication already in progress, ignoring duplicate request")
+            return
+        }
+        
+        // Also skip if already authenticated
+        guard !isAuthenticated else {
+            logger.info("Auth", "Already authenticated, skipping")
+            return
+        }
+        
+        try await performAuthHandshake()
+    }
+    
+    /// Verify/refresh authentication - always performs handshake to get fresh randoms
+    /// This is equivalent to Gadgetbridge's VerifyPrivateKeyRequest
+    /// Source: VerifyPrivateKeyRequest.java - called before every encrypted file operation
+    func verifyAuthentication() async throws {
+        // Prevent concurrent authentication attempts
+        guard !isAuthenticating else {
+            logger.warning("Auth", "Authentication already in progress, ignoring duplicate request")
+            return
+        }
+        
+        logger.info("Auth", "Verifying authentication (refreshing randoms)...")
+        try await performAuthHandshake()
+    }
+    
+    /// Internal method that performs the actual auth handshake
+    private func performAuthHandshake() async throws {
         logger.info("Auth", "Starting authentication process")
+        isAuthenticating = true
 
         guard let key = secretKey else {
             logger.error("Auth", "No secret key configured")
+            isAuthenticating = false
             throw AuthError.noSecretKey
         }
 
@@ -85,9 +121,10 @@ final class AuthenticationManager: ObservableObject {
             }
         }
 
-        // Enable notifications for auth characteristic
-        logger.debug("Auth", "Enabling notifications for authentication characteristic")
-        try await bluetoothManager.enableNotifications(for: FossilConstants.characteristicAuthentication)
+        // Note: Notifications are already enabled during connection setup in BluetoothManager
+        // Do NOT call enableNotifications again here - it can cause issues with iOS CoreBluetooth
+        // when dealing with indicate characteristics
+        logger.debug("Auth", "Using existing notification subscription for authentication characteristic")
 
         // Build and send start sequence
         let startSequence = buildStartSequence()
@@ -141,6 +178,7 @@ final class AuthenticationManager: ObservableObject {
     /// Reset authentication state (called on disconnect)
     func resetAuthState() {
         isAuthenticated = false
+        isAuthenticating = false
         authState = .idle
         phoneRandomNumber = nil
         watchRandomNumber = nil
@@ -315,6 +353,7 @@ final class AuthenticationManager: ObservableObject {
             logger.info("Auth", "Watch authenticated and ready for communication")
             authState = .authenticated
             isAuthenticated = true
+            isAuthenticating = false
             authContinuation?.resume()
             authContinuation = nil
         } else {
@@ -331,12 +370,216 @@ final class AuthenticationManager: ObservableObject {
         }
     }
 
+    // MARK: - Post-Auth Device Confirmation & Pairing
+    
+    /// Perform device confirmation and pairing after authentication
+    /// Source: FossilHRWatchAdapter.java initializeAfterAuthentication() flow
+    /// This must be called after successful authentication before accessing encrypted files like CONFIGURATION
+    func performPostAuthInitialization() async throws {
+        guard isAuthenticated else {
+            throw AuthError.noSecretKey
+        }
+        
+        logger.info("Auth", "Starting post-auth initialization...")
+        
+        // Step 1: Check if device needs confirmation
+        // Source: CheckDeviceNeedsConfirmationRequest.java - sends [0x01, 0x07] to 3DDA0005
+        logger.info("Auth", "Checking if device needs confirmation...")
+        let needsConfirmation = try await checkDeviceNeedsConfirmation()
+        
+        if needsConfirmation {
+            logger.info("Auth", "Device needs confirmation - prompting user...")
+            // This prompts a confirmation dialog on the watch
+            let confirmed = try await confirmOnDevice()
+            if confirmed {
+                logger.info("Auth", "✅ User confirmed connection on watch")
+                // After confirmation, perform pairing
+                try await checkAndPerformPairing()
+            } else {
+                logger.warning("Auth", "User declined confirmation on watch - trying pairing anyway...")
+                // Try pairing anyway - the watch may not actually require confirmation
+                // or the confirmation may have been handled previously
+                try await checkAndPerformPairing()
+            }
+        } else {
+            logger.info("Auth", "Device does not need confirmation")
+            // Still check/perform pairing
+            try await checkAndPerformPairing()
+        }
+        
+        logger.info("Auth", "✅ Post-auth initialization complete")
+    }
+    
+    /// Check if the watch needs user confirmation for this connection
+    /// Source: CheckDeviceNeedsConfirmationRequest.java
+    private func checkDeviceNeedsConfirmation() async throws -> Bool {
+        // Send: [0x01, 0x07]
+        // Response: [0x03, 0x07, status] where status 0x00 = needs confirmation
+        let request = Data([0x01, 0x07])
+        logger.debug("Auth", "Sending needs-confirmation check: \(request.hexString)")
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicAuthentication) { [weak self] data in
+                guard data.count >= 3, data[0] == 0x03, data[1] == 0x07 else {
+                    self?.logger.warning("Auth", "Unexpected confirmation check response: \(data.hexString)")
+                    return
+                }
+                
+                let needsConfirmation = data[2] == 0x00
+                self?.logger.info("Auth", "Needs confirmation: \(needsConfirmation) (status: 0x\(String(format: "%02X", data[2])))")
+                self?.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicAuthentication)
+                continuation.resume(returning: needsConfirmation)
+            }
+            
+            Task {
+                do {
+                    try await self.bluetoothManager.write(data: request, to: FossilConstants.characteristicAuthentication)
+                } catch {
+                    self.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicAuthentication)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    /// Prompt user to confirm connection on the watch
+    /// Source: ConfirmOnDeviceRequest.java
+    private func confirmOnDevice() async throws -> Bool {
+        // Send: [0x02, 0x06, 0x30, 0x75, 0x00, 0x00, 0x00]
+        // Response: [0x03, 0x06, 0x00, status] where status 0x01 = confirmed
+        let request = Data([0x02, 0x06, 0x30, 0x75, 0x00, 0x00, 0x00])
+        logger.debug("Auth", "Sending confirm-on-device request: \(request.hexString)")
+        logger.info("Auth", "⌚ Please confirm connection on the watch...")
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            var hasResumed = false
+            
+            // 30 second timeout for user to confirm
+            let timeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                if !hasResumed {
+                    hasResumed = true
+                    self?.logger.warning("Auth", "Confirmation timed out")
+                    self?.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicAuthentication)
+                    continuation.resume(returning: false)
+                }
+            }
+            
+            bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicAuthentication) { [weak self] data in
+                guard data.count >= 4, data[0] == 0x03, data[1] == 0x06, data[2] == 0x00 else {
+                    self?.logger.warning("Auth", "Unexpected confirmation response: \(data.hexString)")
+                    return
+                }
+                
+                guard !hasResumed else { return }
+                hasResumed = true
+                timeoutTask.cancel()
+                let confirmed = data[3] == 0x01
+                self?.logger.info("Auth", "User confirmation result: \(confirmed ? "confirmed ✅" : "declined ❌")")
+                self?.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicAuthentication)
+                continuation.resume(returning: confirmed)
+            }
+            
+            Task {
+                do {
+                    try await self.bluetoothManager.write(data: request, to: FossilConstants.characteristicAuthentication)
+                } catch {
+                    guard !hasResumed else { return }
+                    hasResumed = true
+                    timeoutTask.cancel()
+                    self.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicAuthentication)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    /// Check device pairing status and perform pairing if needed
+    /// Source: CheckDevicePairingRequest.java, PerformDevicePairingRequest.java
+    private func checkAndPerformPairing() async throws {
+        // Check pairing: send [0x01, 0x16] to 3DDA0002
+        // Response: [0x03, 0x16, status] where status 0x01 = paired
+        let checkRequest = Data([0x01, 0x16])
+        logger.info("Auth", "Checking device pairing status...")
+        
+        let isPaired = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicControl) { [weak self] data in
+                guard data.count >= 3, data[0] == 0x03, data[1] == 0x16 else {
+                    self?.logger.warning("Auth", "Unexpected pairing check response: \(data.hexString)")
+                    return
+                }
+                
+                let paired = data[2] == 0x01
+                self?.logger.info("Auth", "Device pairing status: \(paired ? "paired" : "not paired")")
+                self?.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicControl)
+                continuation.resume(returning: paired)
+            }
+            
+            Task {
+                do {
+                    try await self.bluetoothManager.write(data: checkRequest, to: FossilConstants.characteristicControl)
+                } catch {
+                    self.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicControl)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+        
+        if !isPaired {
+            logger.info("Auth", "Device not paired, performing pairing...")
+            try await performPairing()
+        } else {
+            logger.info("Auth", "✅ Device already paired")
+        }
+    }
+    
+    /// Perform device pairing
+    /// Source: PerformDevicePairingRequest.java - sends [0x02, 0x16] to 3DDA0002
+    private func performPairing() async throws {
+        let pairRequest = Data([0x02, 0x16])
+        logger.debug("Auth", "Sending pairing request: \(pairRequest.hexString)")
+        
+        let pairingSuccess = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicControl) { [weak self] data in
+                guard data.count >= 3, data[0] == 0x03, data[1] == 0x16 else {
+                    self?.logger.warning("Auth", "Unexpected pairing response: \(data.hexString)")
+                    return
+                }
+                
+                let success = data[2] == 0x01
+                self?.logger.info("Auth", "Pairing result: \(success ? "success" : "failed")")
+                self?.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicControl)
+                continuation.resume(returning: success)
+            }
+            
+            Task {
+                do {
+                    try await self.bluetoothManager.write(data: pairRequest, to: FossilConstants.characteristicControl)
+                } catch {
+                    self.bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicControl)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+        
+        if pairingSuccess {
+            logger.info("Auth", "✅ Device pairing successful")
+            // Add a small delay after pairing to allow watch to update state
+            logger.debug("Auth", "Waiting 500ms for watch state to settle...")
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        } else {
+            logger.error("Auth", "Device pairing failed")
+            throw AuthError.rejected
+        }
+    }
+
     private func failAuth(with error: AuthError) {
         logger.error("Auth", "Authentication failed: \(error.localizedDescription)")
         logger.error("Auth", "Final state - phoneRandom: \(phoneRandomNumber?.hexString ?? "nil"), watchRandom: \(watchRandomNumber?.hexString ?? "nil")")
         lastError = error
         authState = .failed
         isAuthenticated = false
+        isAuthenticating = false
         authContinuation?.resume(throwing: error)
         authContinuation = nil
     }

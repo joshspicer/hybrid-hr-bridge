@@ -13,9 +13,12 @@ enum FossilConstants {
     
     // MARK: - Characteristic UUIDs
     
-    /// Connection parameters / device pairing
-    /// Source: Request.java#L53
+    /// Connection parameters / device pairing / control
+    /// Source: Request.java#L53, CheckDevicePairingRequest.java
     static let characteristicConnectionParams = CBUUID(string: "3dda0002-957f-7d4a-34a6-74696673696d")
+    
+    /// Alias for device control/pairing operations
+    static let characteristicControl = characteristicConnectionParams
     
     /// File operations (put/get requests)
     /// Source: FilePutRawRequest.java#L237
