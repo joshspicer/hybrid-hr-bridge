@@ -171,11 +171,36 @@ final class BluetoothManager: NSObject, ObservableObject {
     func write(data: Data, to characteristic: CBUUID, type: CBCharacteristicWriteType = .withResponse) async throws {
         guard let device = connectedDevice,
               let char = device.characteristics[characteristic] else {
+            print("[BLE] Write failed: characteristic not found \(characteristic)")
             throw BluetoothError.characteristicNotFound
         }
         
+        // Determine the best write type based on characteristic properties
+        var actualType = type
+        if type == .withResponse && !char.properties.contains(.write) {
+            // Characteristic doesn't support write with response, try without
+            if char.properties.contains(.writeWithoutResponse) {
+                print("[BLE] Characteristic \(characteristic) doesn't support .withResponse, using .withoutResponse")
+                actualType = .withoutResponse
+            } else {
+                print("[BLE] Characteristic \(characteristic) doesn't support any write type")
+                throw BluetoothError.characteristicNotWritable
+            }
+        } else if type == .withoutResponse && !char.properties.contains(.writeWithoutResponse) {
+            // Characteristic doesn't support write without response, try with
+            if char.properties.contains(.write) {
+                print("[BLE] Characteristic \(characteristic) doesn't support .withoutResponse, using .withResponse")
+                actualType = .withResponse
+            } else {
+                print("[BLE] Characteristic \(characteristic) doesn't support any write type")
+                throw BluetoothError.characteristicNotWritable
+            }
+        }
+        
+        print("[BLE] Writing \(data.count) bytes to \(characteristic) (type: \(actualType == .withResponse ? "withResponse" : "withoutResponse"))")
+        
         return try await withCheckedThrowingContinuation { continuation in
-            if type == .withResponse {
+            if actualType == .withResponse {
                 writeCompletionHandler = { error in
                     if let error = error {
                         continuation.resume(throwing: BluetoothError.writeFailed(error))
@@ -183,11 +208,11 @@ final class BluetoothManager: NSObject, ObservableObject {
                         continuation.resume()
                     }
                 }
-            }
-            
-            device.peripheral.writeValue(data, for: char, type: type)
-            
-            if type == .withoutResponse {
+                
+                device.peripheral.writeValue(data, for: char, type: actualType)
+            } else {
+                // For withoutResponse, we complete immediately after writing
+                device.peripheral.writeValue(data, for: char, type: actualType)
                 continuation.resume()
             }
         }
@@ -422,6 +447,7 @@ enum BluetoothError: Error, LocalizedError {
     case serviceDiscoveryFailed(Error)
     case characteristicDiscoveryFailed(Error)
     case characteristicNotFound
+    case characteristicNotWritable
     case writeFailed(Error)
     case timeout
     case deviceNotFound(UUID)
@@ -446,6 +472,8 @@ enum BluetoothError: Error, LocalizedError {
             return "Characteristic discovery failed: \(error.localizedDescription)"
         case .characteristicNotFound:
             return "Required characteristic not found"
+        case .characteristicNotWritable:
+            return "Characteristic does not support writing"
         case .writeFailed(let error):
             return "Write failed: \(error.localizedDescription)"
         case .timeout:

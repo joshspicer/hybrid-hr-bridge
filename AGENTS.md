@@ -113,6 +113,8 @@ xcodebuild -project hybridHRBridge/hybridHRBridge.xcodeproj -scheme hybridHRBrid
 # For actual BLE testing, deploy to physical iPhone
 ```
 
+Use the XcodeMCP Server to check if a physical iPhone is connected. If it is, deploy to the iPhone and test live by connecting to the watch, taking screenshots, inspecting logs, etc...
+
 ## Common Tasks
 
 ### Adding a new file handle

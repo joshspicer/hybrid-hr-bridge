@@ -49,6 +49,11 @@ final class FileTransferManager: ObservableObject {
     private let bluetoothManager: BluetoothManager
     private let authManager: AuthenticationManager
     private let logger = LogManager.shared
+    
+    /// Semaphore to ensure only one file operation at a time
+    private let operationSemaphore = DispatchSemaphore(value: 1)
+    /// Flag to track if an operation is in progress
+    @Published private(set) var isOperationInProgress = false
 
     private var transferState: TransferState = .idle
     private var currentData: Data?
@@ -78,14 +83,19 @@ final class FileTransferManager: ObservableObject {
     /// - Parameters:
     ///   - data: The file data to transfer
     ///   - handle: The file handle destination
-    ///   - encrypted: Whether to use encrypted transfer (requires authentication)
-    func putFile(_ data: Data, to handle: FileHandle, encrypted: Bool = false) async throws {
+    ///   - requiresAuth: Whether this operation requires authentication (default: false)
+    ///                   Notifications do NOT require auth per Gadgetbridge - they use regular FilePutRequest
+    ///                   Time sync and configuration changes DO require auth - they use FileEncryptedInterface
+    /// Source: FossilWatchAdapter.java - queueWrite(FossilRequest) only checks isConnected(), not authentication
+    func putFile(_ data: Data, to handle: FileHandle, requiresAuth: Bool = false) async throws {
         guard !isTransferring else {
             throw FileTransferError.transferInProgress
         }
         
-        guard authManager.isAuthenticated || !encrypted else {
-            throw FileTransferError.notAuthenticated
+        if requiresAuth {
+            guard authManager.isAuthenticated else {
+                throw FileTransferError.notAuthenticated
+            }
         }
         
         isTransferring = true
@@ -140,6 +150,9 @@ final class FileTransferManager: ObservableObject {
     }
     
     /// Send a notification to the watch
+    /// Note: Notifications do NOT require authentication per Gadgetbridge
+    /// Source: FossilHRWatchAdapter.java#L1388-L1433 - playRawNotification uses PlayTextNotificationRequest
+    ///         which extends FilePutRequest (not FileEncryptedInterface)
     func sendNotification(
         type: NotificationType,
         title: String,
@@ -150,7 +163,7 @@ final class FileTransferManager: ObservableObject {
         let messageID = UInt32.random(in: 0...UInt32.max)
         let packageCRC = appIdentifier.crc32
 
-        logger.info("Notification", "Sending notification to watch")
+        logger.info("Notification", "Sending notification to watch (no auth required)")
         logger.debug("Notification", "Type: \(type), ID: \(messageID)")
         logger.debug("Notification", "Title: '\(title)'")
         logger.debug("Notification", "Sender: '\(sender)'")
@@ -169,12 +182,15 @@ final class FileTransferManager: ObservableObject {
         logger.debug("Notification", "Payload size: \(payload.count) bytes")
         logger.debug("Notification", "Payload data: \(payload.prefix(20).hexString)...")
 
-        try await putFile(payload, to: .notificationPlay)
+        // Notifications don't require authentication - only BLE connection
+        try await putFile(payload, to: .notificationPlay, requiresAuth: false)
 
         logger.info("Notification", "✅ Notification sent successfully (ID: \(messageID))")
     }
     
     /// Sync time to the watch
+    /// Note: Time sync REQUIRES authentication per Gadgetbridge - uses FileEncryptedInterface
+    /// Source: FossilHRWatchAdapter.java#L1220-L1228 - uses (FileEncryptedInterface) ConfigurationPutRequest
     func syncTime(date: Date = Date(), timeZone: TimeZone = .current) async throws {
         logger.info("TimeSync", "Starting time synchronization")
 
@@ -194,8 +210,8 @@ final class FileTransferManager: ObservableObject {
         let configData = RequestBuilder.buildTimeSyncRequest(date: date, timeZone: timeZone)
         logger.debug("TimeSync", "Config data: \(configData.hexString)")
 
-        // Time sync uses the configuration file handle
-        try await putFile(configData, to: .configuration)
+        // Time sync uses the configuration file handle - requires authentication
+        try await putFile(configData, to: .configuration, requiresAuth: true)
 
         logger.info("TimeSync", "✅ Time synced successfully to \(formatter.string(from: date))")
     }
@@ -424,24 +440,42 @@ final class FileTransferManager: ObservableObject {
 
     // MARK: - Encrypted File Read
 
-    private func fetchEncryptedFile(for handle: FileHandle) async throws -> Data {
+    /// Fetch an encrypted file from the watch (public API for other managers)
+    /// This performs a file lookup followed by an encrypted get request
+    func fetchEncryptedFile(for handle: FileHandle) async throws -> Data {
+        logger.info("Protocol", "=== Starting encrypted file fetch for \(handle) ===")
+        
         guard authManager.isAuthenticated else {
+            logger.error("Protocol", "Not authenticated, cannot fetch encrypted file")
             throw FileTransferError.notAuthenticated
         }
 
-        guard !isTransferring, readState == nil else {
+        // Try to acquire the semaphore (non-blocking check first)
+        guard !isOperationInProgress else {
+            logger.warning("Protocol", "Another file operation is already in progress")
             throw FileTransferError.transferInProgress
+        }
+        
+        isOperationInProgress = true
+        defer { 
+            isOperationInProgress = false
+            logger.debug("Protocol", "Operation complete, releasing lock")
         }
 
         guard let key = authManager.getSecretKey(),
               let phoneRandom = authManager.getPhoneRandomNumber(),
               let watchRandom = authManager.getWatchRandomNumber() else {
+            logger.error("Protocol", "Missing encryption context")
             throw FileTransferError.missingEncryptionContext
         }
 
-        logger.info("Protocol", "Starting encrypted read for \(handle)")
+        logger.debug("Protocol", "Key available: \(key.count) bytes")
+        logger.debug("Protocol", "Phone random: \(phoneRandom.hexString)")
+        logger.debug("Protocol", "Watch random: \(watchRandom.hexString)")
 
         let iv = AESCrypto.generateFileIV(phoneRandom: phoneRandom, watchRandom: watchRandom)
+        logger.debug("Protocol", "Generated IV: \(iv.hexString)")
+        
         readState = EncryptedReadState(
             dynamicHandle: nil,
             lookupExpectedSize: 0,
@@ -454,14 +488,18 @@ final class FileTransferManager: ObservableObject {
             ivIncrementor: 0x1F
         )
 
+        logger.debug("Protocol", "Registering notification handlers...")
+        
         bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicFileOperations) { [weak self] data in
             Task { @MainActor in
+                self?.logger.debug("Protocol", "📥 Received on 3dda0003: \(data.hexString)")
                 self?.handleEncryptedReadResponse(data)
             }
         }
 
         bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicFileData) { [weak self] data in
             Task { @MainActor in
+                self?.logger.debug("Protocol", "📥 Received on 3dda0004: \(data.count) bytes (first: 0x\(String(format: "%02X", data.first ?? 0)))")
                 self?.handleEncryptedReadData(data)
             }
         }
@@ -472,22 +510,30 @@ final class FileTransferManager: ObservableObject {
             self.readTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
                 await MainActor.run {
-                    self?.failRead(with: .timeout)
+                    if self?.readState != nil {
+                        self?.logger.error("Protocol", "⏰ Timeout waiting for file data")
+                        self?.failRead(with: .timeout)
+                    }
                 }
             }
 
             Task { [weak self] in
                 guard let self = self else { return }
 
+                // Small delay to ensure notifications are fully registered
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
                 do {
                     let request = RequestBuilder.buildFileLookupRequest(for: handle)
-                    self.logger.debug("Protocol", "Lookup request: \(request.hexString)")
+                    self.logger.info("Protocol", "📤 Sending lookup request: \(request.hexString)")
                     try await self.bluetoothManager.write(
                         data: request,
-                        to: FossilConstants.characteristicFileOperations
+                        to: FossilConstants.characteristicFileOperations,
+                        type: .withResponse
                     )
-                    self.logger.info("Protocol", "Lookup request sent for \(handle)")
+                    self.logger.info("Protocol", "✅ Lookup request sent successfully")
                 } catch {
+                    self.logger.error("Protocol", "❌ Write failed: \(error.localizedDescription)")
                     await MainActor.run {
                         self.failRead(with: .writeFailed(error))
                     }
@@ -497,9 +543,13 @@ final class FileTransferManager: ObservableObject {
     }
 
     private func handleEncryptedReadResponse(_ data: Data) {
-        guard var state = readState, !data.isEmpty else { return }
+        guard var state = readState, !data.isEmpty else { 
+            logger.warning("Protocol", "handleEncryptedReadResponse: No read state or empty data")
+            return 
+        }
 
         let responseType = data[0] & 0x0F
+        logger.debug("Protocol", "Response type: 0x\(String(format: "%02X", responseType)), phase: \(state.phase)")
 
         do {
             switch state.phase {
@@ -508,6 +558,7 @@ final class FileTransferManager: ObservableObject {
                     readState = state
                     let major = UInt8((resolvedHandle >> 8) & 0xFF)
                     let minor = UInt8(resolvedHandle & 0xFF)
+                    logger.info("Protocol", "Lookup complete! Resolved to major=0x\(String(format: "%02X", major)), minor=0x\(String(format: "%02X", minor))")
                     sendEncryptedGetRequest(major: major, minor: minor)
                     return
                 }
@@ -515,14 +566,17 @@ final class FileTransferManager: ObservableObject {
                 let shouldComplete = try handleEncryptedGetControl(data, responseType: responseType, state: &state)
                 readState = state
                 if shouldComplete {
+                    logger.info("Protocol", "Encrypted get complete, \(state.fileBuffer.count) bytes received")
                     completeRead(with: state.fileBuffer)
                 }
                 return
             }
         } catch let error as FileTransferError {
+            logger.error("Protocol", "Response handling error: \(error.localizedDescription)")
             failRead(with: error)
             return
         } catch {
+            logger.error("Protocol", "Unexpected error: \(error)")
             failRead(with: .invalidResponse)
             return
         }
@@ -531,24 +585,32 @@ final class FileTransferManager: ObservableObject {
     }
 
     private func handleEncryptedReadData(_ data: Data) {
-        guard var state = readState, !data.isEmpty else { return }
+        guard var state = readState, !data.isEmpty else { 
+            logger.warning("Protocol", "handleEncryptedReadData: No read state or empty data")
+            return 
+        }
 
         switch state.phase {
         case .lookup:
+            logger.debug("Protocol", "Lookup data received: \(data.count) bytes, buffer now: \(state.lookupBuffer.count + data.count - 1) bytes")
             if data.count > 1 {
                 state.lookupBuffer.append(data.dropFirst())
             }
             if state.lookupExpectedSize > 0, state.lookupBuffer.count > state.lookupExpectedSize {
+                logger.error("Protocol", "Lookup buffer overflow: \(state.lookupBuffer.count) > \(state.lookupExpectedSize)")
                 failRead(with: .invalidResponse)
                 return
             }
         case .encryptedGet:
             do {
                 try decryptEncryptedPacket(data, state: &state)
+                logger.debug("Protocol", "Decrypted packet \(state.packetCount - 1), buffer now: \(state.fileBuffer.count) bytes")
             } catch let error as FileTransferError {
+                logger.error("Protocol", "Decrypt error: \(error.localizedDescription)")
                 failRead(with: error)
                 return
             } catch {
+                logger.error("Protocol", "Unexpected decrypt error: \(error)")
                 failRead(with: .invalidResponse)
                 return
             }
@@ -729,12 +791,17 @@ final class FileTransferManager: ObservableObject {
         Task { [weak self] in
             guard let self = self else { return }
 
+            // Small delay before sending get request
+            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+
             do {
                 let request = RequestBuilder.buildFileGetRequest(major: major, minor: minor)
                 self.logger.debug("Protocol", "Encrypted get request: \(request.hexString)")
+                // Use withResponse for encrypted get requests to ensure reliable delivery
                 try await self.bluetoothManager.write(
                     data: request,
-                    to: FossilConstants.characteristicFileOperations
+                    to: FossilConstants.characteristicFileOperations,
+                    type: .withResponse
                 )
                 self.logger.info("Protocol", "Encrypted get request sent (major: 0x\(String(format: "%02X", major)), minor: 0x\(String(format: "%02X", minor)))")
             } catch {

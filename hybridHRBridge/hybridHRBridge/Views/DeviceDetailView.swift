@@ -9,8 +9,11 @@ struct DeviceDetailView: View {
     @State private var isSyncingTime = false
     @State private var showingAppInstall = false
     @State private var showingLogExport = false
+    @State private var showingActivityData = false
     @State private var statusMessage: String?
     @State private var isRefreshingBattery = false
+    @State private var isRefreshingActivity = false
+    @State private var activityData: ActivityData?
     
     var body: some View {
         List {
@@ -26,16 +29,146 @@ struct DeviceDetailView: View {
                             Text(watchManager.authManager.isAuthenticated ? "Authenticated" : "Not Authenticated")
                         }
                     }
-                    if let battery = watch.batteryLevel {
-                        LabeledContent("Battery", value: "\(battery)%")
-                    }
-                    if let voltage = watch.batteryVoltageMillivolts {
-                        let volts = Double(voltage) / 1000.0
-                        LabeledContent("Battery Voltage", value: String(format: "%.3f V", volts))
-                    }
                     if let firmware = watch.firmwareVersion {
                         LabeledContent("Firmware", value: firmware)
                     }
+                }
+
+                // Battery Section
+                Section {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Image(systemName: batteryIcon(for: watch.batteryLevel))
+                                    .foregroundColor(batteryColor(for: watch.batteryLevel))
+                                    .font(.title2)
+                                
+                                if let battery = watch.batteryLevel {
+                                    Text("\(battery)%")
+                                        .font(.title2)
+                                        .fontWeight(.semibold)
+                                } else {
+                                    Text("--")
+                                        .font(.title2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            
+                            if let voltage = watch.batteryVoltageMillivolts {
+                                let volts = Double(voltage) / 1000.0
+                                Text(String(format: "%.3f V", volts))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        Button {
+                            refreshBattery()
+                        } label: {
+                            if isRefreshingBattery {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!watchManager.authManager.isAuthenticated || isRefreshingBattery)
+                    }
+                } header: {
+                    Text("Battery")
+                }
+
+                // Activity Summary Section
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let activity = activityData {
+                            HStack(spacing: 20) {
+                                VStack {
+                                    Image(systemName: "figure.walk")
+                                        .foregroundColor(.blue)
+                                        .font(.title2)
+                                    Text("\(activity.totalSteps)")
+                                        .font(.headline)
+                                    Text("Steps")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                Divider()
+                                    .frame(height: 40)
+                                
+                                VStack {
+                                    Image(systemName: "heart.fill")
+                                        .foregroundColor(.red)
+                                        .font(.title2)
+                                    Text(activity.averageHeartRate > 0 ? "\(activity.averageHeartRate)" : "--")
+                                        .font(.headline)
+                                    Text("Avg HR")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                Divider()
+                                    .frame(height: 40)
+                                
+                                VStack {
+                                    Image(systemName: "flame.fill")
+                                        .foregroundColor(.orange)
+                                        .font(.title2)
+                                    Text("\(activity.totalCalories)")
+                                        .font(.headline)
+                                    Text("Calories")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            HStack {
+                                Image(systemName: "figure.walk.circle")
+                                    .foregroundColor(.secondary)
+                                    .font(.title2)
+                                Text("No activity data")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        HStack {
+                            Button {
+                                refreshActivity()
+                            } label: {
+                                HStack {
+                                    if isRefreshingActivity {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    Text("Refresh")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!watchManager.authManager.isAuthenticated || isRefreshingActivity)
+                            
+                            Spacer()
+                            
+                            if activityData != nil {
+                                Button {
+                                    showingActivityData = true
+                                } label: {
+                                    HStack {
+                                        Text("View Details")
+                                        Image(systemName: "chevron.right")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Activity")
                 }
             }
             
@@ -57,22 +190,6 @@ struct DeviceDetailView: View {
                     }
                 }
                 .disabled(!watchManager.authManager.isAuthenticated || isSyncingTime)
-
-                Button {
-                    refreshBattery()
-                } label: {
-                    HStack {
-                        Image(systemName: "battery.100")
-                            .frame(width: 30)
-                        Text("Refresh Battery")
-                        Spacer()
-                        if isRefreshingBattery {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                        }
-                    }
-                }
-                .disabled(!watchManager.authManager.isAuthenticated || isRefreshingBattery)
                 
                 // Test Notification
                 Button {
@@ -81,10 +198,18 @@ struct DeviceDetailView: View {
                     HStack {
                         Image(systemName: "bell.badge")
                             .frame(width: 30)
-                        Text("Send Test Notification")
+                        VStack(alignment: .leading) {
+                            Text("Send Test Notification")
+                            if !watchManager.authManager.isAuthenticated {
+                                Text("Works without authentication!")
+                                    .font(.caption2)
+                                    .foregroundColor(.green)
+                            }
+                        }
                     }
                 }
-                .disabled(!watchManager.authManager.isAuthenticated)
+                // Notifications don't require auth - they use regular FilePutRequest
+                // Source: FossilHRWatchAdapter.java - playRawNotification
                 
                 // Install App
                 Button {
@@ -145,7 +270,7 @@ struct DeviceDetailView: View {
                         authenticate()
                     }
                 } footer: {
-                    Text("Authentication is required to send notifications and sync data.")
+                    Text("Authentication is required for time sync, activity data, and battery status. Notifications work without authentication!")
                 }
             }
         }
@@ -159,6 +284,19 @@ struct DeviceDetailView: View {
         .sheet(isPresented: $showingLogExport) {
             LogExportView()
                 .environmentObject(logManager)
+        }
+        .sheet(isPresented: $showingActivityData) {
+            NavigationStack {
+                ActivityDataView()
+                    .environmentObject(watchManager)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") {
+                                showingActivityData = false
+                            }
+                        }
+                    }
+            }
         }
     }
     
@@ -183,10 +321,7 @@ struct DeviceDetailView: View {
 
         Task {
             do {
-                let status = try await watchManager.refreshBatteryStatus()
-                await MainActor.run {
-                    statusMessage = "Battery \(status.percentage)% (\(status.voltageMillivolts) mV)"
-                }
+                _ = try await watchManager.refreshBatteryStatus()
             } catch {
                 await MainActor.run {
                     statusMessage = "Battery update failed: \(error.localizedDescription)"
@@ -196,6 +331,50 @@ struct DeviceDetailView: View {
             await MainActor.run {
                 isRefreshingBattery = false
             }
+        }
+    }
+
+    private func refreshActivity() {
+        statusMessage = nil
+        isRefreshingActivity = true
+
+        Task {
+            do {
+                let data = try await watchManager.fetchActivityData()
+                await MainActor.run {
+                    activityData = data
+                }
+            } catch {
+                await MainActor.run {
+                    statusMessage = "Activity fetch failed: \(error.localizedDescription)"
+                }
+            }
+
+            await MainActor.run {
+                isRefreshingActivity = false
+            }
+        }
+    }
+
+    // MARK: - Battery Helpers
+
+    private func batteryIcon(for level: Int?) -> String {
+        guard let level = level else { return "battery.0" }
+        switch level {
+        case 0..<10: return "battery.0"
+        case 10..<35: return "battery.25"
+        case 35..<65: return "battery.50"
+        case 65..<90: return "battery.75"
+        default: return "battery.100"
+        }
+    }
+
+    private func batteryColor(for level: Int?) -> Color {
+        guard let level = level else { return .secondary }
+        switch level {
+        case 0..<20: return .red
+        case 20..<40: return .orange
+        default: return .green
         }
     }
     
