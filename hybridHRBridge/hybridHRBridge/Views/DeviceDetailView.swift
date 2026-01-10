@@ -318,13 +318,21 @@ struct DeviceDetailView: View {
     private func refreshBattery() {
         statusMessage = nil
         isRefreshingBattery = true
+        
+        LogManager.shared.info("UI", "Battery refresh button tapped")
 
         Task {
             do {
-                _ = try await watchManager.refreshBatteryStatus()
+                LogManager.shared.info("UI", "Starting battery refresh...")
+                let status = try await watchManager.refreshBatteryStatus()
+                await MainActor.run {
+                    statusMessage = "Battery: \(status.percentage)%"
+                    LogManager.shared.info("UI", "Battery refresh complete: \(status.percentage)%")
+                }
             } catch {
                 await MainActor.run {
                     statusMessage = "Battery update failed: \(error.localizedDescription)"
+                    LogManager.shared.error("UI", "Battery refresh failed: \(error.localizedDescription)")
                 }
             }
 

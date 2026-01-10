@@ -16,6 +16,7 @@
 7. [Protocol Message Formats](#7-protocol-message-formats)
 8. [Connection Parameters](#8-connection-parameters)
 9. [Activity Data Fetch Protocol](#9-activity-data-fetch-protocol)
+10. [Encrypted File Read Protocol (Detailed)](#10-encrypted-file-read-protocol-detailed)
 
 ---
 
@@ -353,6 +354,333 @@ Connection interval max: 0x000C (12) × 1.25ms = 15ms
 Slave latency: 0x002D (45)
 Supervision timeout: 0x0258 (600) × 10ms = 6 seconds
 ```
+
+---
+
+## 10. Encrypted File Read Protocol (Detailed)
+
+This section documents the complete encrypted file read flow used for reading sensitive data like configuration (battery, device settings) and activity files.
+
+### Overview
+
+Reading encrypted files requires a **two-phase protocol**:
+1. **Lookup Phase**: Resolve the static file handle to a dynamic handle
+2. **Encrypted Get Phase**: Fetch and decrypt the file data using AES-CTR
+
+**CRITICAL**: Each encrypted read operation requires fresh random numbers. Call `VerifyPrivateKeyRequest` (re-authentication handshake) before EVERY encrypted file operation to generate new phone/watch randoms. Using stale randoms causes IV reuse and decryption failure.
+
+**Source:** [FileEncryptedLookupAndGetRequest.java](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil_hr/file/FileEncryptedLookupAndGetRequest.java)
+
+### Phase 1: File Lookup
+
+**Source:** [FileLookupRequest.java#L26-L60](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil/file/FileLookupRequest.java#L26-L60)
+
+#### Request Format (3 bytes)
+
+**Characteristic:** `3dda0003`
+
+```
+Byte 0:     0x02 (file lookup command)
+Byte 1:     0xFF (lookup marker)
+Byte 2:     Major handle (e.g., 0x08 for CONFIGURATION)
+```
+
+Example for CONFIGURATION file: `02 FF 08`
+
+#### Lookup Responses
+
+The lookup phase involves multiple responses across two characteristics:
+
+**Response 1 on 3dda0003** (9 bytes):
+```
+Byte 0:      0x82 (0x02 | 0x80 = lookup response)
+Byte 1:      0xFF
+Byte 2:      Major handle echoed
+Byte 3:      Status (0x00 = success)
+Bytes 4-7:   Expected data size (little-endian uint32)
+Byte 8:      0x00 padding
+```
+
+**Data on 3dda0004** (variable length):
+```
+Byte 0:      0x80 (data packet marker)
+Bytes 1-2:   Resolved minor/major handle
+Bytes 3-6:   File size (little-endian uint32)
+Bytes 7-10:  CRC32 of lookup data
+```
+
+**Response 2 on 3dda0003** (12 bytes - completion):
+```
+Byte 0:      0x88 (0x08 | 0x80 = lookup complete)
+Byte 1:      0xFF
+Byte 2:      Major handle
+Byte 3:      Status (0x00 = success)
+Bytes 4-7:   Data size
+Bytes 8-11:  CRC32 of received data
+```
+
+#### Extracting the Dynamic Handle
+
+From the data packet on 3dda0004:
+```swift
+let handleValue = UInt16(data[1]) | (UInt16(data[2]) << 8)
+let minor = UInt8(handleValue & 0xFF)
+let major = UInt8((handleValue >> 8) & 0xFF)
+```
+
+### Phase 2: Encrypted Get
+
+**Source:** [FileEncryptedGetRequest.java#L36-L140](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil_hr/file/FileEncryptedGetRequest.java#L36-L140)
+
+#### Request Format (11 bytes)
+
+**Characteristic:** `3dda0003`
+
+```
+Byte 0:      0x01 (file get command)
+Byte 1:      Minor handle (from lookup)
+Byte 2:      Major handle (from lookup)
+Bytes 3-6:   Start offset (little-endian, typically 0x00000000)
+Bytes 7-10:  End offset (little-endian, 0xFFFFFFFF for full file)
+```
+
+Example: `01 00 08 00 00 00 00 FF FF FF FF`
+
+#### Get Response (on 3dda0003)
+
+**Init Response** (9 bytes):
+```
+Byte 0:      0x81 (0x01 | 0x80 = get init response)
+Byte 1:      Minor handle
+Byte 2:      Major handle
+Byte 3:      Status (0x00 = success)
+Bytes 4-7:   File size (little-endian uint32)
+Byte 8:      0x00 padding
+```
+
+**Completion Response** (12 bytes):
+```
+Byte 0:      0x88 (0x08 | 0x80 = get complete)
+Byte 1:      Minor handle
+Byte 2:      Major handle
+Byte 3:      Status (0x00 = success)
+Bytes 4-7:   File size
+Bytes 8-11:  **Expected CRC32** of decrypted data
+```
+
+### AES-CTR Decryption
+
+**Source:** [FileEncryptedGetRequest.java#L82-L140](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil_hr/file/FileEncryptedGetRequest.java#L82-L140)
+
+#### IV Construction
+
+The IV is built from the phone and watch random numbers generated during authentication:
+
+```swift
+var iv = Data(repeating: 0, count: 16)
+// Copy phone random bytes 0-5 into IV positions 2-7
+for i in 0..<6 {
+    iv[2 + i] = phoneRandom[i]
+}
+// Increment byte at position 7
+iv[7] = iv[7] &+ 1
+// Copy watch random bytes 0-6 into IV positions 9-15
+for i in 0..<7 {
+    iv[9 + i] = watchRandom[i]
+}
+```
+
+**Result**: `00 00 [phone0-5] 00 [watch0-6]` with phone[5]+1
+
+#### Packet Decryption
+
+Each encrypted packet on 3dda0004 must be decrypted:
+
+**First Packet (packet 0)**:
+- Use the original IV directly
+- Decrypted byte 0 is the header:
+  - `0x80` = last packet (MSB set)
+  - `0x00-0x7F` = more packets coming
+- Remaining bytes are payload
+
+**Subsequent Packets**:
+- IV must be incremented for each packet
+- Increment amount is discovered from packet 1 (typically `0x1F`)
+- For packet N: `IV[7] += incrementor * N`
+
+**IV Incrementor Discovery** (for packet 1):
+```swift
+for summand in 0x1E...0x2F {
+    let testIV = incrementedIV(from: originalIV, by: summand)
+    let candidate = AES_CTR_decrypt(packet, key, testIV)
+    
+    // Check if header byte makes sense
+    let header = candidate[0]
+    let expectedHeader: UInt8 = (currentBufferSize + candidate.count - 1 == expectedFileSize) ? 0x81 : 0x01
+    
+    if header == expectedHeader {
+        ivIncrementor = summand  // Found it!
+        break
+    }
+}
+```
+
+### CRC32 Validation
+
+**CRITICAL**: All file transfers include CRC32 validation to ensure data integrity.
+
+#### CRC32 Algorithm
+
+Uses the standard CRC-32 polynomial (IEEE 802.3):
+- Polynomial: `0xEDB88320`
+- Initial value: `0xFFFFFFFF`
+- Final XOR: `0xFFFFFFFF`
+
+```swift
+extension Data {
+    var crc32: UInt32 {
+        var crc: UInt32 = 0xFFFFFFFF
+        for byte in self {
+            crc = (crc >> 8) ^ crcTable[Int((crc ^ UInt32(byte)) & 0xFF)]
+        }
+        return crc ^ 0xFFFFFFFF
+    }
+}
+```
+
+#### Where CRC Validation Occurs
+
+1. **Lookup Phase**: CRC of lookup data (on 3dda0004) validated against CRC in completion response (3dda0003)
+2. **Get Phase**: CRC of **decrypted** file data validated against CRC in completion response
+
+```swift
+// From completion response on 3dda0003
+let expectedCRC = data.subdata(in: 8..<12).withUnsafeBytes { 
+    $0.load(as: UInt32.self) 
+}.littleEndian
+
+// Compute CRC of decrypted file buffer
+let actualCRC = fileBuffer.crc32
+
+guard expectedCRC == actualCRC else {
+    throw FileTransferError.invalidCRC
+}
+```
+
+### Configuration File Parsing
+
+**Source:** [ConfigurationGetRequest.java#L40-L73](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil/configuration/ConfigurationGetRequest.java#L40-L73)
+
+The CONFIGURATION file (handle 0x0800) contains device settings as a series of TLV (Type-Length-Value) items.
+
+#### File Structure
+
+```
+Bytes 0-11:  File header (12 bytes)
+[Payload]:   Configuration items (TLV format)
+Last 4:      CRC32 or trailer
+```
+
+#### Configuration Item Format (TLV)
+
+Each item in the payload:
+```
+Bytes 0-1:   Item ID (little-endian uint16)
+Byte 2:      Data length
+Bytes 3-N:   Item data
+```
+
+#### Parsing Loop
+
+```swift
+let payloadRange = 12..<(fileData.count - 4)
+let payload = fileData.subdata(in: payloadRange)
+
+var buffer = ByteBuffer(data: payload)
+while buffer.remainingBytes > 0 {
+    guard let itemId = buffer.getUInt16(),      // 2 bytes, little-endian
+          let length = buffer.getUInt8(),        // 1 byte
+          let data = buffer.getBytes(Int(length)) else {
+        break
+    }
+    
+    // Process item based on itemId
+    switch itemId {
+    case 0x0001: // CurrentTime
+    case 0x0002: // StepCount
+    case 0x000D: // BatteryConfig
+        // ...
+    }
+}
+```
+
+#### Battery Config Item (ID 0x000D)
+
+**Source:** [BatteryConfigItem.java](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/requests/fossil/configuration/ConfigurationPutRequest.java#L190-L220)
+
+```
+Bytes 0-1:   Voltage in millivolts (little-endian uint16)
+Byte 2:      Battery percentage (0-100)
+Byte 3:      (Optional) Charging state
+```
+
+Parsing:
+```swift
+if itemId == 0x000D && data.count >= 3 {
+    let voltage = UInt16(data[0]) | (UInt16(data[1]) << 8)
+    let percentage = Int(data[2])
+    // data[3] may contain charging state if present
+}
+```
+
+### Complete Read Flow Example
+
+```
+1. [Phone] Call verifyAuthentication() to get fresh randoms
+   └─ Generates new phoneRandom and watchRandom
+   
+2. [Phone] Build IV from randoms
+   └─ IV = [00 00 phone[0-5] 00 watch[0-6]] with phone[5]+1
+
+3. [Phone → Watch] Send lookup: 02 FF 08
+   └─ On 3dda0003
+   
+4. [Watch → Phone] Lookup responses
+   ├─ 3dda0003: 82 FF 08 00 0A 00 00 00 00 (expects 10 bytes)
+   ├─ 3dda0004: 80 00 08 B5 00 00 00 [CRC] (handle=0x0800, size=181)
+   └─ 3dda0003: 88 FF 08 00 0A 00 00 00 [CRC] (complete)
+
+5. [Phone] Validate lookup CRC, extract dynamic handle (0x08, 0x00)
+
+6. [Phone → Watch] Send encrypted get: 01 00 08 00 00 00 00 FF FF FF FF
+   └─ On 3dda0003
+
+7. [Watch → Phone] Get responses
+   ├─ 3dda0003: 81 00 08 00 B5 00 00 00 00 (file size=181 bytes)
+   ├─ 3dda0004: [182 encrypted bytes]
+   └─ 3dda0003: 88 00 08 00 B5 00 00 00 [CRC] (complete + expected CRC)
+
+8. [Phone] Decrypt packet using AES-CTR with generated IV
+   └─ First byte of decrypted = 0x80 (last packet)
+   └─ Remaining 181 bytes = file data
+
+9. [Phone] Validate decrypted data CRC matches expected CRC
+
+10. [Phone] Parse configuration TLV items
+    └─ Extract battery info from item 0x000D
+```
+
+### Common Pitfalls
+
+1. **IV Reuse**: MUST call `verifyAuthentication()` before each encrypted operation. Using the same phone/watch randoms twice causes CRC validation to fail because decryption produces garbage.
+
+2. **Byte Order**: All multi-byte integers are **little-endian** throughout the protocol.
+
+3. **CRC Scope**: The CRC in the completion response is for the **decrypted** data, not the encrypted bytes received.
+
+4. **Packet Header**: After decryption, the first byte is a header (0x80 = last, 0x00 = more), NOT part of the file data. Strip it before adding to the buffer.
+
+5. **File Structure**: Configuration files have a 12-byte header and 4-byte trailer that must be stripped before parsing TLV items.
 
 ---
 

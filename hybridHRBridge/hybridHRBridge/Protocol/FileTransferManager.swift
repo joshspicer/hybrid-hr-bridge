@@ -567,10 +567,9 @@ final class FileTransferManager: ObservableObject {
         // CRITICAL: Do VerifyPrivateKeyRequest (re-auth) IMMEDIATELY before the encrypted file operation
         // This is exactly how Gadgetbridge does it - the auth generates fresh randoms that are used for encryption
         // Source: FossilHRWatchAdapter.java queueWrite(FileEncryptedInterface) - always does VerifyPrivateKeyRequest first
-        //
-        // EXPERIMENTAL: Skipping re-auth to see if it's causing the ATT error 14
-        // Using randoms from the initial authentication instead
-        logger.info("Protocol", "EXPERIMENTAL: Skipping VerifyPrivateKeyRequest, using existing auth state")
+        logger.info("Protocol", "Refreshing authentication (VerifyPrivateKeyRequest) for fresh randoms...")
+        try await authManager.verifyAuthentication()
+        
         guard let key = authManager.getSecretKey(),
               let phoneRandom = authManager.getPhoneRandomNumber(),
               let watchRandom = authManager.getWatchRandomNumber() else {
