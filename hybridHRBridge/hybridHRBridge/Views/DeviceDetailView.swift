@@ -219,8 +219,24 @@ struct DeviceDetailView: View {
                 }
             }
             
-            // Notification Status Section
+            // Notification Settings Section
             Section {
+                NavigationLink {
+                    NotificationSettingsView(notificationService: watchManager.notificationService)
+                        .environmentObject(watchManager)
+                } label: {
+                    HStack {
+                        Image(systemName: "bell.badge")
+                            .frame(width: 30)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Notification Settings")
+                            Text("Configure iOS notification forwarding")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
                 HStack {
                     Text("ANCS Authorized")
                     Spacer()
@@ -233,17 +249,17 @@ struct DeviceDetailView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("⚠️ Notifications are not yet implemented.")
+                    Text("🚧 Notifications in development - Phase 1 complete")
                         .font(.caption)
                         .fontWeight(.medium)
-                    Text("Fossil HR watches require proprietary notification forwarding (not standard ANCS). See docs/NOTIFICATION_RESEARCH.md for details.")
+                    Text("iOS notification interception implemented. Protocol implementation and file transfer integration in progress.")
                         .font(.caption2)
                 }
                 .foregroundColor(.secondary)
             } header: {
                 Text("Notifications")
             } footer: {
-                Text("Research on notification protocol is documented but not yet functional.")
+                Text("Tap 'Notification Settings' to configure iOS notification permissions and test notification delivery.")
             }
             
             // Status Message

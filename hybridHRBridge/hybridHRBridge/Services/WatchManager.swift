@@ -19,6 +19,7 @@ final class WatchManager: ObservableObject {
     let authManager: AuthenticationManager
     let fileTransferManager: FileTransferManager
     let activityDataManager: ActivityDataManager
+    let notificationService: NotificationService
     
     // MARK: - Computed Properties
     
@@ -46,6 +47,9 @@ final class WatchManager: ObservableObject {
         fileTransferManager = FileTransferManager(bluetoothManager: bluetoothManager, authManager: authManager)
         // Share the FileTransferManager with ActivityDataManager to prevent handler conflicts
         activityDataManager = ActivityDataManager(fileTransferManager: fileTransferManager, authManager: authManager)
+        
+        // Initialize notification service
+        notificationService = NotificationService()
 
         loadSavedDevices()
         setupBindings()
@@ -53,8 +57,12 @@ final class WatchManager: ObservableObject {
         // Attempt to reconnect to last device when Bluetooth becomes available
         setupAutoReconnect()
         
+        // Connect notification service to file transfer manager
+        notificationService.setFileTransferManager(fileTransferManager)
+        
         logger.info("WatchManager", "Initialized - ANCS authorization checked on peripheral connection")
         logger.info("WatchManager", "To receive system notifications, enable 'Share System Notifications' in iOS Settings > Bluetooth > [watch] > (i)")
+        logger.info("WatchManager", "Notification service initialized - request permissions to intercept iOS notifications")
     }
     
     // MARK: - Device Discovery
@@ -422,6 +430,38 @@ final class WatchManager: ObservableObject {
             connectionStatus = .connected
         }
     }
+    
+    // MARK: - Notification Management
+    
+    /// Request iOS notification permissions
+    func requestNotificationPermissions() async {
+        logger.info("WatchManager", "Requesting iOS notification permissions")
+        await notificationService.requestNotificationPermissions()
+    }
+    
+    /// Check current notification permission status
+    func checkNotificationPermissionStatus() async {
+        await notificationService.checkPermissionStatus()
+    }
+    
+    /// Configure notifications on the watch (called after authentication)
+    func configureWatchNotifications() async {
+        guard connectionStatus == .authenticated else {
+            logger.warning("WatchManager", "Cannot configure notifications - not authenticated")
+            return
+        }
+        
+        logger.info("WatchManager", "Configuring watch for notifications")
+        await notificationService.configureWatchNotifications()
+    }
+    
+    /// Send a test notification to the watch
+    func sendTestNotification() async {
+        logger.info("WatchManager", "Sending test notification to watch")
+        await notificationService.sendTestNotification()
+    }
+    
+    // MARK: - Private Helper Methods
 
     private func setupAutoReconnect() {
         // Monitor Bluetooth state to auto-reconnect when it becomes available
