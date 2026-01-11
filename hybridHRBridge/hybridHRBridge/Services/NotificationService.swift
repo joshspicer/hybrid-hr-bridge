@@ -111,6 +111,7 @@ final class NotificationService: NSObject, ObservableObject {
     
     /// Configure notification settings on the watch (icons and filters)
     /// This should be called after authentication
+    /// Source: FossilHRWatchAdapter.java#L598-L629
     func configureWatchNotifications() async {
         guard let fileTransferManager = fileTransferManager else {
             logger.warning("NotificationService", "Cannot configure notifications - no file transfer manager")
@@ -119,16 +120,32 @@ final class NotificationService: NSObject, ObservableObject {
         
         logger.info("NotificationService", "Configuring watch for notifications")
         
-        // TODO: Phase 2 - Upload notification icons and filters
-        // For now, log that this is a placeholder
-        logger.info("NotificationService", "Notification configuration placeholder - will implement icon/filter upload in Phase 2")
-        
-        isConfigured = true
+        do {
+            // Step 1: Upload standard notification icons
+            logger.info("NotificationService", "Step 1: Uploading notification icons")
+            let icons = NotificationIcon.standardIcons()
+            try await fileTransferManager.uploadNotificationIcons(icons)
+            
+            // Step 2: Upload notification filters
+            logger.info("NotificationService", "Step 2: Uploading notification filters")
+            let configurations = [
+                NotificationConfiguration.generic,
+                NotificationConfiguration.call
+            ]
+            try await fileTransferManager.uploadNotificationFilters(configurations)
+            
+            isConfigured = true
+            logger.info("NotificationService", "✅ Watch configured for notifications successfully")
+        } catch {
+            logger.error("NotificationService", "Failed to configure watch notifications: \(error.localizedDescription)")
+            // Don't set isConfigured to true on failure
+        }
     }
     
     // MARK: - Notification Forwarding
     
     /// Forward a notification to the watch
+    /// Source: FossilHRWatchAdapter.java#L1388-L1441
     private func forwardNotificationToWatch(_ notification: NotificationData) async {
         guard let fileTransferManager = fileTransferManager else {
             logger.warning("NotificationService", "Cannot forward notification - no file transfer manager")
@@ -143,8 +160,23 @@ final class NotificationService: NSObject, ObservableObject {
         logger.info("NotificationService", "Forwarding notification to watch")
         logger.debug("NotificationService", "App: \(notification.appIdentifier), Title: \(notification.title)")
         
-        // TODO: Phase 3 - Implement actual notification sending
-        logger.info("NotificationService", "Notification forwarding placeholder - will implement in Phase 3")
+        do {
+            // Send as generic notification (type 3, flags 0x02)
+            // Source: PlayTextNotificationRequest.java#L24
+            try await fileTransferManager.sendNotification(
+                type: .notification,
+                flags: 0x02,  // Standard notification flag
+                packageName: "generic",  // Use generic for iOS app notifications
+                title: notification.title,
+                sender: notification.appIdentifier,
+                message: notification.body,
+                messageId: UInt32(notification.id.hashValue)
+            )
+            
+            logger.info("NotificationService", "✅ Notification forwarded successfully")
+        } catch {
+            logger.error("NotificationService", "Failed to forward notification: \(error.localizedDescription)")
+        }
     }
     
     /// Send a test notification to verify the system is working

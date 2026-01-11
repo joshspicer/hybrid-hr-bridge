@@ -341,6 +341,137 @@ final class FileTransferManager: ObservableObject {
         return result
     }
     
+    // MARK: - Notification Operations
+    
+    /// Upload notification icons to the watch
+    /// Source: FossilHRWatchAdapter.java#L619-L624
+    /// File handle: 0x0701 (ASSET_NOTIFICATION_IMAGES)
+    func uploadNotificationIcons(_ icons: [NotificationIcon]) async throws {
+        logger.info("FileTransfer", "Uploading \(icons.count) notification icons")
+        
+        guard authManager.isAuthenticated else {
+            throw FileTransferError.notAuthenticated
+        }
+        
+        // Build icon file with all icons concatenated
+        let iconFile = NotificationIcon.buildIconFile(icons: icons)
+        
+        logger.debug("FileTransfer", "Icon file size: \(iconFile.count) bytes")
+        
+        do {
+            try await putFile(iconFile, to: .assetNotificationImages, requiresAuth: false)
+            logger.info("FileTransfer", "✅ Notification icons uploaded successfully")
+        } catch {
+            logger.error("FileTransfer", "Failed to upload notification icons: \(error.localizedDescription)")
+            throw error
+        }
+    }
+    
+    /// Upload notification filters configuration to the watch
+    /// Source: FossilHRWatchAdapter.java#L627-L628
+    /// File handle: 0x0C00 (NOTIFICATION_FILTER)
+    func uploadNotificationFilters(_ configurations: [NotificationConfiguration]) async throws {
+        logger.info("FileTransfer", "Uploading \(configurations.count) notification filters")
+        
+        guard authManager.isAuthenticated else {
+            throw FileTransferError.notAuthenticated
+        }
+        
+        // Build filter file
+        let filterFile = NotificationConfiguration.buildFilterFile(configurations: configurations)
+        
+        logger.debug("FileTransfer", "Filter file size: \(filterFile.count) bytes")
+        
+        do {
+            try await putFile(filterFile, to: .notificationFilter, requiresAuth: false)
+            logger.info("FileTransfer", "✅ Notification filters uploaded successfully")
+        } catch {
+            logger.error("FileTransfer", "Failed to upload notification filters: \(error.localizedDescription)")
+            throw error
+        }
+    }
+    
+    /// Send a notification to the watch
+    /// Source: PlayTextNotificationRequest.java
+    /// File handle: 0x0900 (NOTIFICATION_PLAY)
+    func sendNotification(
+        type: RequestBuilder.NotificationType,
+        flags: UInt8,
+        packageName: String,
+        title: String,
+        sender: String,
+        message: String,
+        messageId: UInt32
+    ) async throws {
+        logger.info("FileTransfer", "Sending notification: \(title)")
+        logger.debug("FileTransfer", "Package: \(packageName), Type: \(type.rawValue), Flags: 0x\(String(format: "%02X", flags))")
+        
+        guard authManager.isAuthenticated else {
+            throw FileTransferError.notAuthenticated
+        }
+        
+        // Build notification payload
+        let payload = RequestBuilder.buildNotificationPayload(
+            type: type,
+            flags: flags,
+            packageName: packageName,
+            title: title,
+            sender: sender,
+            message: message,
+            messageId: messageId
+        )
+        
+        logger.debug("FileTransfer", "Notification payload size: \(payload.count) bytes")
+        
+        do {
+            try await putFile(payload, to: .notificationPlay, requiresAuth: false)
+            logger.info("FileTransfer", "✅ Notification sent successfully")
+        } catch {
+            logger.error("FileTransfer", "Failed to send notification: \(error.localizedDescription)")
+            throw error
+        }
+    }
+    
+    /// Send a notification with explicit package CRC (for hardcoded values like call CRC)
+    /// Source: PlayNotificationRequest.java
+    func sendNotification(
+        type: RequestBuilder.NotificationType,
+        flags: UInt8,
+        packageCrc: UInt32,
+        title: String,
+        sender: String,
+        message: String,
+        messageId: UInt32
+    ) async throws {
+        logger.info("FileTransfer", "Sending notification: \(title)")
+        logger.debug("FileTransfer", "CRC: 0x\(String(format: "%08X", packageCrc)), Type: \(type.rawValue), Flags: 0x\(String(format: "%02X", flags))")
+        
+        guard authManager.isAuthenticated else {
+            throw FileTransferError.notAuthenticated
+        }
+        
+        // Build notification payload with explicit CRC
+        let payload = RequestBuilder.buildNotificationPayload(
+            type: type,
+            flags: flags,
+            packageCrc: packageCrc,
+            title: title,
+            sender: sender,
+            message: message,
+            messageId: messageId
+        )
+        
+        logger.debug("FileTransfer", "Notification payload size: \(payload.count) bytes")
+        
+        do {
+            try await putFile(payload, to: .notificationPlay, requiresAuth: false)
+            logger.info("FileTransfer", "✅ Notification sent successfully")
+        } catch {
+            logger.error("FileTransfer", "Failed to send notification: \(error.localizedDescription)")
+            throw error
+        }
+    }
+    
     // MARK: - Private Methods
     
     private func handleFileResponse(_ data: Data) {
