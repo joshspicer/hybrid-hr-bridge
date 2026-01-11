@@ -144,6 +144,104 @@ struct RequestBuilder {
         
         return buffer.data
     }
+    
+    // MARK: - Notification Building
+    
+    /// Build a notification payload for sending to the watch
+    /// Source: PlayNotificationRequest.java#L54-L92
+    /// https://codeberg.org/Freeyourgadget/Gadgetbridge/.../PlayNotificationRequest.java
+    static func buildNotificationPayload(
+        type: NotificationType,
+        flags: UInt8,
+        packageName: String,
+        title: String,
+        sender: String,
+        message: String,
+        messageId: UInt32
+    ) -> Data {
+        // Calculate package CRC
+        let packageCrc = CRC32.calculate(data: packageName.data(using: .utf8)!)
+        
+        return buildNotificationPayload(
+            type: type,
+            flags: flags,
+            packageCrc: packageCrc,
+            title: title,
+            sender: sender,
+            message: message,
+            messageId: messageId
+        )
+    }
+    
+    /// Build notification payload with explicit CRC (for call notifications)
+    /// Source: PlayNotificationRequest.java#L54-L92
+    static func buildNotificationPayload(
+        type: NotificationType,
+        flags: UInt8,
+        packageCrc: UInt32,
+        title: String,
+        sender: String,
+        message: String,
+        messageId: UInt32
+    ) -> Data {
+        // Constants from PlayNotificationRequest.java
+        let lengthBufferLength: UInt8 = 10
+        let uidLength: UInt8 = 4
+        let appBundleCRCLength: UInt8 = 4
+        
+        // Null-terminate strings
+        let titleBytes = (title + "\0").data(using: .utf8)!
+        let senderBytes = (sender + "\0").data(using: .utf8)!
+        
+        // Truncate message if too long (max 475 chars)
+        var truncatedMessage = message
+        if message.count > 475 {
+            truncatedMessage = String(message.prefix(475))
+        }
+        let messageBytes = (truncatedMessage + "\0").data(using: .utf8)!
+        
+        // Calculate total buffer size
+        let mainBufferLength = UInt16(lengthBufferLength) + UInt16(uidLength) + 
+                               UInt16(appBundleCRCLength) + UInt16(titleBytes.count) + 
+                               UInt16(senderBytes.count) + UInt16(messageBytes.count)
+        
+        var buffer = ByteBuffer(capacity: Int(mainBufferLength))
+        
+        // Main buffer length (2 bytes, little-endian)
+        buffer.putUInt16(mainBufferLength)
+        
+        // Length buffer fields
+        buffer.putUInt8(lengthBufferLength)
+        buffer.putUInt8(type.rawValue)
+        buffer.putUInt8(flags)
+        buffer.putUInt8(uidLength)
+        buffer.putUInt8(appBundleCRCLength)
+        buffer.putUInt8(UInt8(titleBytes.count))
+        buffer.putUInt8(UInt8(senderBytes.count))
+        buffer.putUInt8(UInt8(messageBytes.count))
+        
+        // Message ID and package CRC (4 bytes each, little-endian)
+        buffer.putUInt32(messageId)
+        buffer.putUInt32(packageCrc)
+        
+        // String data (already null-terminated)
+        buffer.putData(titleBytes)
+        buffer.putData(senderBytes)
+        buffer.putData(messageBytes)
+        
+        return buffer.data
+    }
+    
+    // MARK: - Notification Types
+    
+    /// Notification type enum matching Gadgetbridge
+    /// Source: NotificationType.java
+    enum NotificationType: UInt8 {
+        case incomingCall = 1
+        case text = 2
+        case notification = 3
+        case dismissNotification = 7
+    }
 }
 
 // MARK: - Private Helpers
