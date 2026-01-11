@@ -1,6 +1,6 @@
 # Hybrid HR Bridge
 
-iOS companion app for Fossil/Skagen Hybrid HR smartwatches, replicating functionality from the discontinued official Fossil app.
+iOS companion app for Fossil/Skagen Hybrid HR smartwatches, with the goal of replicating functionality from the discontinued official Fossil app.
 
 ## Features
 
@@ -11,17 +11,13 @@ iOS companion app for Fossil/Skagen Hybrid HR smartwatches, replicating function
 
 ## Documentation
 
-- [Protocol Specification](docs/PROTOCOL_SPECIFICATION.md) - Complete BLE protocol details
-- [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md) - Architecture and development guide
-- [Troubleshooting Guide](docs/TROUBLESHOOTING.md) - **Authentication issues and key extraction**
-
+- [Protocol Specification](docs/PROTOCOL_SPECIFICATION.md) - BLE protocol details as discovered so far by reverse engineering (may contain inaccuracies or omissions)
 ## Getting Started
 
 ### Prerequisites
 
 1. A Fossil or Skagen Hybrid HR smartwatch
-2. The watch must be paired with Gadgetbridge on Android to extract the secret key
-3. Xcode 15.0+ for building the iOS app
+2. The secret key extracted by MITM'ing skagen app when on first pair of the watch (see [GadgetBridge's docs on this](https://gadgetbridge.org/basics/pairing/fossil-server/))
 
 ### Extracting Your Device Key
 

@@ -15,6 +15,10 @@ final class BluetoothManager: NSObject, ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .disconnected
     @Published private(set) var lastError: BluetoothError?
     
+    /// Whether the connected peripheral is authorized to receive ANCS notifications
+    /// User must enable "Share System Notifications" in iOS Bluetooth settings for this to be true
+    @Published private(set) var ancsAuthorized = false
+    
     // MARK: - Types
     
     enum ConnectionState: Equatable {
@@ -68,6 +72,7 @@ final class BluetoothManager: NSObject, ObservableObject {
     
     // MARK: - Private Properties
     
+    private let logger = LogManager.shared
     private var centralManager: CBCentralManager!
     private var pendingConnection: CBPeripheral?
     private var characteristicUpdateHandlers: [CBUUID: (Data) -> Void] = [:]
@@ -128,11 +133,16 @@ final class BluetoothManager: NSObject, ObservableObject {
         pendingConnection = device.peripheral
         device.peripheral.delegate = self
         
+        // CBConnectPeripheralOptionRequiresANCS tells iOS this connection needs ANCS access
+        // On first connection, iOS will prompt user to "Share System Notifications"
+        // This is required for the watch to receive iOS notifications via ANCS
         centralManager.connect(device.peripheral, options: [
             CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+            CBConnectPeripheralOptionRequiresANCS: true
         ])
         
+        logger.info("BLE", "Connecting to \(device.name) with ANCS requirement...")
         print("[BLE] Connecting to \(device.name)...")
     }
     
@@ -147,12 +157,14 @@ final class BluetoothManager: NSObject, ObservableObject {
         
         if let peripheral = peripherals.first {
             print("[BLE] Found cached peripheral for UUID \(uuid), connecting...")
+            logger.info("BLE", "Found cached peripheral, connecting with ANCS requirement...")
             pendingConnection = peripheral
             peripheral.delegate = self
             
             centralManager.connect(peripheral, options: [
                 CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-                CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+                CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+                CBConnectPeripheralOptionRequiresANCS: true
             ])
         } else {
             // Peripheral not in cache, try to find it via connected peripherals with our service
@@ -160,15 +172,18 @@ final class BluetoothManager: NSObject, ObservableObject {
             
             if let peripheral = connectedPeripherals.first(where: { $0.identifier == uuid }) {
                 print("[BLE] Found connected peripheral for UUID \(uuid), connecting...")
+                logger.info("BLE", "Found connected peripheral, connecting with ANCS requirement...")
                 pendingConnection = peripheral
                 peripheral.delegate = self
                 
                 centralManager.connect(peripheral, options: [
                     CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-                    CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+                    CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+                    CBConnectPeripheralOptionRequiresANCS: true
                 ])
             } else {
                 print("[BLE] Could not find peripheral for UUID \(uuid), starting scan...")
+                logger.warning("BLE", "Could not find peripheral for UUID \(uuid), starting scan...")
                 // Start scanning to find the device
                 lastError = .deviceNotFound(uuid)
                 connectionState = .disconnected
@@ -324,14 +339,27 @@ extension BluetoothManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             print("[BLE] Connected to \(peripheral.name ?? "Unknown")")
+            logger.info("BLE", "Connected to \(peripheral.name ?? "Unknown")")
             connectionState = .discovering
             connectedDevice = ConnectedDevice(
                 peripheral: peripheral,
                 name: peripheral.name ?? "Fossil Watch"
             )
             
-            // Discover services
-            peripheral.discoverServices([FossilConstants.serviceUUID])
+            // Check ANCS authorization status
+            // This tells us if the user has enabled "Share System Notifications" for this peripheral
+            let authorized = peripheral.ancsAuthorized
+            ancsAuthorized = authorized
+            print("[BLE] ANCS authorized: \(authorized)")
+            logger.info("BLE", "ANCS authorized: \(authorized)")
+            if !authorized {
+                print("[BLE] To receive system notifications, enable 'Share System Notifications' in iOS Settings > Bluetooth > \(peripheral.name ?? "device") > (i)")
+                logger.warning("BLE", "ANCS not authorized - enable 'Share System Notifications' in iOS Bluetooth settings")
+            }
+            
+            // Discover ALL services first to see what the watch supports
+            // This helps debug ANCS and understand watch capabilities
+            peripheral.discoverServices(nil)
         }
     }
     
@@ -352,6 +380,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
             characteristicUpdateHandlers.removeAll()
             writeCompletions.removeAll()
             hasTransitionedToAuthenticating = false
+            ancsAuthorized = false  // Reset ANCS status on disconnect
             
             if let error = error {
                 lastError = .disconnected(error)
@@ -370,6 +399,22 @@ extension BluetoothManager: CBCentralManagerDelegate {
             }
         }
     }
+    
+    /// Called when ANCS authorization status changes for a connected peripheral
+    /// This happens when user toggles "Share System Notifications" in Bluetooth settings
+    nonisolated func centralManager(_ central: CBCentralManager, didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
+        Task { @MainActor in
+            let authorized = peripheral.ancsAuthorized
+            ancsAuthorized = authorized
+            print("[BLE] ANCS authorization updated: \(authorized)")
+            
+            if authorized {
+                print("[BLE] ✅ ANCS authorized - watch will now receive system notifications!")
+            } else {
+                print("[BLE] ⚠️ ANCS not authorized - enable 'Share System Notifications' in iOS Bluetooth settings")
+            }
+        }
+    }
 }
 
 // MARK: - CBPeripheralDelegate
@@ -380,17 +425,58 @@ extension BluetoothManager: CBPeripheralDelegate {
         Task { @MainActor in
             if let error = error {
                 print("[BLE] Service discovery error: \(error)")
+                logger.error("BLE", "Service discovery error: \(error.localizedDescription)")
                 lastError = .serviceDiscoveryFailed(error)
                 return
             }
             
             guard let services = peripheral.services else { return }
             
+            logger.info("BLE", "Discovered \(services.count) services")
+            
+            // ANCS Service UUID - if present, watch can subscribe to iOS notifications
+            let ancsServiceUUID = CBUUID(string: "7905F431-B5CE-4E99-A40F-4B1E122D00D0")
+            // Standard BLE service UUIDs for reference
+            let knownServices: [CBUUID: String] = [
+                CBUUID(string: "180A"): "Device Information Service",
+                CBUUID(string: "180F"): "Battery Service",
+                CBUUID(string: "1800"): "Generic Access",
+                CBUUID(string: "1801"): "Generic Attribute",
+                ancsServiceUUID: "Apple Notification Center Service (ANCS)",
+                FossilConstants.serviceUUID: "Fossil Proprietary Service"
+            ]
+            
+            var hasANCS = false
+            var hasFossil = false
+            
             for service in services {
-                print("[BLE] Discovered service: \(service.uuid)")
+                let serviceName = knownServices[service.uuid] ?? "Unknown"
+                print("[BLE] Discovered service: \(service.uuid) (\(serviceName))")
+                logger.debug("BLE", "Service: \(service.uuid) - \(serviceName)")
+                
+                if service.uuid == ancsServiceUUID {
+                    hasANCS = true
+                    // Discover ANCS characteristics to understand what watch supports
+                    peripheral.discoverCharacteristics(nil, for: service)
+                }
+                
                 if service.uuid == FossilConstants.serviceUUID {
+                    hasFossil = true
                     peripheral.discoverCharacteristics(FossilConstants.allCharacteristics, for: service)
                 }
+            }
+            
+            // Log ANCS capability summary
+            if hasANCS {
+                logger.info("BLE", "✅ Watch EXPOSES ANCS service - it can receive notifications FROM iOS")
+            } else {
+                logger.info("BLE", "Watch does not expose ANCS service - this is normal, watch may SUBSCRIBE to iOS's ANCS instead")
+            }
+            
+            if hasFossil {
+                logger.info("BLE", "✅ Fossil proprietary service found")
+            } else {
+                logger.warning("BLE", "⚠️ Fossil service not found!")
             }
         }
     }

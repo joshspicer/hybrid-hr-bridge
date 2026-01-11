@@ -30,6 +30,17 @@ struct DebugView: View {
                         Text(watchManager.authManager.isAuthenticated ? "Yes" : "No")
                     }
                 }
+                
+                // ANCS Status - for notification delivery
+                // This checks peripheral.ancsAuthorized which reflects "Share System Notifications" toggle
+                LabeledContent("ANCS Authorized") {
+                    HStack {
+                        Circle()
+                            .fill(watchManager.ancsAuthorized ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                        Text(watchManager.ancsAuthorized ? "Yes" : "No")
+                    }
+                }
 
                 if let watch = watchManager.connectedWatch {
                     LabeledContent("Device Name", value: watch.name)
@@ -41,6 +52,32 @@ struct DebugView: View {
                                 .font(.system(.caption, design: .monospaced))
                         }
                     }
+                }
+            }
+            
+            // ANCS Info Section
+            Section("Notifications") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("ANCS Authorized:")
+                            .font(.caption)
+                        Spacer()
+                        HStack {
+                            Circle()
+                                .fill(watchManager.ancsAuthorized ? Color.green : Color.orange)
+                                .frame(width: 8, height: 8)
+                            Text(watchManager.ancsAuthorized ? "Yes" : "No")
+                                .font(.caption)
+                        }
+                    }
+                    
+                    Text("⚠️ Notifications not yet implemented. Fossil HR watches don't use standard ANCS - they require proprietary protocol forwarding (like Gadgetbridge on Android).")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    
+                    Text("See docs/NOTIFICATION_RESEARCH.md for details.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
 
@@ -112,30 +149,6 @@ struct DebugView: View {
                     HStack {
                         Image(systemName: "clock.arrow.circlepath")
                         Text("Sync Time")
-                        Spacer()
-                        if isPerformingAction {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                        }
-                    }
-                }
-                .disabled(!watchManager.authManager.isAuthenticated || isPerformingAction)
-
-                Button {
-                    performAction {
-                        try await watchManager.sendNotification(
-                            type: .notification,
-                            title: "Debug Test",
-                            sender: "Hybrid HR Bridge",
-                            message: "Test notification from debug view",
-                            appIdentifier: "com.hybridhrbridge.debug"
-                        )
-                        statusMessage = "✅ Test notification sent"
-                    }
-                } label: {
-                    HStack {
-                        Image(systemName: "bell.badge")
-                        Text("Send Test Notification")
                         Spacer()
                         if isPerformingAction {
                             ProgressView()

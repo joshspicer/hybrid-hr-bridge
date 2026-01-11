@@ -98,53 +98,9 @@ struct RequestBuilder {
             configPayload.append(itemBuffer.data)
         }
 
-        return buildFilePayload(handle: .configuration, fileVersion: fileVersion, fileData: configPayload) // SUSPICIOUS: requires real device supported file version mapping
-    }
-    
-    // MARK: - Notification Request
-    
-    /// Build a notification payload
-    /// Source: PlayNotificationRequest.java#L54-L92
-    /// File Handle: 0x0900 (NOTIFICATION_PLAY)
-    static func buildNotification(
-        type: NotificationType,
-        title: String,
-        sender: String,
-        message: String,
-        packageCRC: UInt32,
-        messageID: UInt32,
-        flags: UInt8 = 0
-    ) -> Data {
-        // Truncate message to 475 chars max
-        let truncatedMessage = String(message.prefix(475))
-
-        let titleBytes = nullTerminatedData(for: title, allowingMaxLength: 255)
-        let senderBytes = nullTerminatedData(for: sender, allowingMaxLength: 255)
-        let messageBytes = nullTerminatedData(for: truncatedMessage, allowingMaxLength: 475)
-
-        let lengthHeader: UInt8 = 0x0A
-        let uidLength: UInt8 = 0x04
-        let packageLength: UInt8 = 0x04
-
-        let totalLength = Int(lengthHeader) + Int(uidLength) + Int(packageLength) + titleBytes.count + senderBytes.count + messageBytes.count
-
-        var payload = ByteBuffer(capacity: totalLength)
-        payload.putUInt16(UInt16(totalLength))
-        payload.putUInt8(lengthHeader)
-        payload.putUInt8(type.rawValue)
-        payload.putUInt8(flags)
-        payload.putUInt8(uidLength)
-        payload.putUInt8(packageLength)
-        payload.putUInt8(UInt8(truncatingIfNeeded: titleBytes.count))
-        payload.putUInt8(UInt8(truncatingIfNeeded: senderBytes.count))
-        payload.putUInt8(UInt8(truncatingIfNeeded: messageBytes.count))
-        payload.putUInt32(messageID)
-        payload.putUInt32(packageCRC)
-        payload.putData(titleBytes)
-        payload.putData(senderBytes)
-        payload.putData(messageBytes)
-
-        return buildFilePayload(handle: .notificationPlay, fileVersion: 0x0003, fileData: payload.data) // SUSPICIOUS: using fallback file version until SupportedFileVersionsInfo is implemented
+        // Return RAW config payload - putFile() handles the file wrapper
+        // Source: ConfigurationPutRequest extends FilePutRequest - Gadgetbridge's FilePutRequest wraps the data
+        return configPayload
     }
     
     // MARK: - Connection Parameters
@@ -216,18 +172,4 @@ extension RequestBuilder {
         data.append(0x00)
         return data
     }
-}
-
-// MARK: - Notification Type
-
-/// Notification types for the watch
-/// Source: NotificationType.java#L18-L37
-enum NotificationType: UInt8 {
-    case incomingCall = 1
-    case text = 2
-    case notification = 3
-    case email = 4
-    case calendar = 5
-    case missedCall = 6
-    case dismissNotification = 7
 }

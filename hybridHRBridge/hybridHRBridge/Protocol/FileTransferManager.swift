@@ -156,12 +156,13 @@ final class FileTransferManager: ObservableObject {
     
     /// Put a file to the watch
     /// - Parameters:
-    ///   - data: The file data to transfer
+    ///   - data: The RAW file content to transfer (will be wrapped with file header)
     ///   - handle: The file handle destination
     ///   - requiresAuth: Whether this operation requires authentication (default: false)
     ///                   Notifications do NOT require auth per Gadgetbridge - they use regular FilePutRequest
     ///                   Time sync and configuration changes DO require auth - they use FileEncryptedInterface
     /// Source: FossilWatchAdapter.java - queueWrite(FossilRequest) only checks isConnected(), not authentication
+    /// Source: FilePutRequest.java - createFilePayload wraps data with handle/version/offset/size/data/crc
     func putFile(_ data: Data, to handle: FileHandle, requiresAuth: Bool = false) async throws {
         guard !isTransferring else {
             throw FileTransferError.transferInProgress
@@ -173,13 +174,21 @@ final class FileTransferManager: ObservableObject {
             }
         }
         
+        // CRITICAL: Wrap the raw file data with file header before sending
+        // Source: FilePutRequest.java createFilePayload() adds: handle(2) + version(2) + offset(4) + size(4) + data + crc32c(4)
+        // The watch expects this wrapped format when receiving file data
+        let fileVersion: UInt16 = 0x0003 // TODO: Get from SupportedFileVersionsInfo
+        let wrappedData = RequestBuilder.buildFilePayload(handle: handle, fileVersion: fileVersion, fileData: data)
+        
+        logger.debug("FileTransfer", "Wrapping raw data (\(data.count) bytes) → wrapped (\(wrappedData.count) bytes)")
+        
         isTransferring = true
         progress = 0
-        currentData = data
+        currentData = wrappedData
         currentHandle = handle
         bytesSent = 0
         packetIndex = 0
-        fullCRC32 = data.crc32
+        fullCRC32 = wrappedData.crc32
         transferState = .sendingHeader
         
         defer {
@@ -195,9 +204,9 @@ final class FileTransferManager: ObservableObject {
             }
         }
         
-        // Build and send file put header
-        let header = RequestBuilder.buildFilePutRequest(handle: handle, data: data)
-        print("[FileTransfer] Sending PUT header for \(handle): \(header.hexString)")
+        // Build and send file put header - use wrappedData for correct size
+        let header = RequestBuilder.buildFilePutRequest(handle: handle, data: wrappedData)
+        logger.debug("FileTransfer", "Sending PUT header for \(handle): \(header.hexString)")
         
         try await bluetoothManager.write(
             data: header,
@@ -222,45 +231,6 @@ final class FileTransferManager: ObservableObject {
         }
         
         print("[FileTransfer] Transfer complete!")
-    }
-    
-    /// Send a notification to the watch
-    /// Note: Notifications do NOT require authentication per Gadgetbridge
-    /// Source: FossilHRWatchAdapter.java#L1388-L1433 - playRawNotification uses PlayTextNotificationRequest
-    ///         which extends FilePutRequest (not FileEncryptedInterface)
-    func sendNotification(
-        type: NotificationType,
-        title: String,
-        sender: String,
-        message: String,
-        appIdentifier: String
-    ) async throws {
-        let messageID = UInt32.random(in: 0...UInt32.max)
-        let packageCRC = appIdentifier.crc32
-
-        logger.info("Notification", "Sending notification to watch (no auth required)")
-        logger.debug("Notification", "Type: \(type), ID: \(messageID)")
-        logger.debug("Notification", "Title: '\(title)'")
-        logger.debug("Notification", "Sender: '\(sender)'")
-        logger.debug("Notification", "Message: '\(message.prefix(100))\(message.count > 100 ? "..." : "")'")
-        logger.debug("Notification", "App: \(appIdentifier), CRC32: 0x\(String(format: "%08X", packageCRC))")
-
-        let payload = RequestBuilder.buildNotification(
-            type: type,
-            title: title,
-            sender: sender,
-            message: message,
-            packageCRC: packageCRC,
-            messageID: messageID
-        )
-
-        logger.debug("Notification", "Payload size: \(payload.count) bytes")
-        logger.debug("Notification", "Payload data: \(payload.prefix(20).hexString)...")
-
-        // Notifications don't require authentication - only BLE connection
-        try await putFile(payload, to: .notificationPlay, requiresAuth: false)
-
-        logger.info("Notification", "✅ Notification sent successfully (ID: \(messageID))")
     }
     
     /// Sync time to the watch
@@ -463,7 +433,15 @@ final class FileTransferManager: ObservableObject {
         }
         
         let resultCode = data[3]
-        if resultCode == 0 {
+        // Result codes:
+        // 0x00 = Success
+        // 0x05 = File written/applied (seen for notification filters, icons, and notifications)
+        // Other codes may be actual errors
+        // Source: Based on observed behavior with Skagen Gen 6 Hybrid
+        if resultCode == 0 || resultCode == 0x05 {
+            if resultCode == 0x05 {
+                print("[FileTransfer] Transfer complete with code 0x05 (file written/applied)")
+            }
             transferState = .complete
             progress = 1.0
             transferContinuation?.resume()

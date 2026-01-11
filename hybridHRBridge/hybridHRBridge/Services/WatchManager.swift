@@ -20,6 +20,14 @@ final class WatchManager: ObservableObject {
     let fileTransferManager: FileTransferManager
     let activityDataManager: ActivityDataManager
     
+    // MARK: - Computed Properties
+    
+    /// Whether the connected watch is authorized to receive ANCS (system) notifications
+    /// This requires the user to enable "Share System Notifications" in iOS Bluetooth settings
+    var ancsAuthorized: Bool {
+        bluetoothManager.ancsAuthorized
+    }
+    
     // MARK: - Private Properties
 
     private var cancellables = Set<AnyCancellable>()
@@ -44,6 +52,9 @@ final class WatchManager: ObservableObject {
 
         // Attempt to reconnect to last device when Bluetooth becomes available
         setupAutoReconnect()
+        
+        logger.info("WatchManager", "Initialized - ANCS authorization checked on peripheral connection")
+        logger.info("WatchManager", "To receive system notifications, enable 'Share System Notifications' in iOS Settings > Bluetooth > [watch] > (i)")
     }
     
     // MARK: - Device Discovery
@@ -154,51 +165,6 @@ final class WatchManager: ObservableObject {
         }
         
         logger.info("WatchManager", "Secret key set successfully")
-    }
-    
-    // MARK: - Notifications
-    
-    /// Send a notification to the watch
-    /// Note: Notifications do NOT require authentication per Gadgetbridge - only BLE connection
-    /// Source: FossilHRWatchAdapter.java - playRawNotification uses FilePutRequest (not FileEncryptedInterface)
-    func sendNotification(
-        type: NotificationType,
-        title: String,
-        sender: String,
-        message: String,
-        appIdentifier: String
-    ) async throws {
-        guard connectionStatus != .disconnected else {
-            throw WatchManagerError.notConnected
-        }
-        
-        try await fileTransferManager.sendNotification(
-            type: type,
-            title: title,
-            sender: sender,
-            message: message,
-            appIdentifier: appIdentifier
-        )
-    }
-    
-    /// Dismiss a notification on the watch
-    /// Note: Like sending notifications, dismissing does NOT require authentication
-    /// Source: FossilHRWatchAdapter.java#L1448 - uses DismissTextNotificationRequest (not encrypted)
-    func dismissNotification(messageId: UInt32) async throws {
-        guard connectionStatus != .disconnected else {
-            throw WatchManagerError.notConnected
-        }
-        
-        let payload = RequestBuilder.buildNotification(
-            type: .dismissNotification,
-            title: "",
-            sender: "",
-            message: "",
-            packageCRC: 0,
-            messageID: messageId
-        )
-        
-        try await fileTransferManager.putFile(payload, to: .notificationPlay, requiresAuth: false)
     }
     
     // MARK: - Time Sync
@@ -441,6 +407,14 @@ final class WatchManager: ObservableObject {
                 logger.info("WatchManager", "✅ Battery: \(battery.percentage)% (\(battery.voltageMillivolts)mV)")
             } catch {
                 logger.warning("WatchManager", "Failed to fetch initial battery: \(error.localizedDescription)")
+            }
+            
+            // NOTE: Notification delivery on Fossil HR requires proprietary protocol forwarding.
+            // See docs/NOTIFICATION_RESEARCH.md for details on why ANCS doesn't work.
+            // For now, notifications are not implemented - research is documented.
+            logger.info("WatchManager", "ANCS authorized: \(ancsAuthorized)")
+            if !ancsAuthorized {
+                logger.warning("WatchManager", "⚠️ ANCS not authorized - enable 'Share System Notifications' in iOS Settings > Bluetooth > \(connectedWatch?.name ?? "watch") > (i)")
             }
         } catch {
             logger.error("WatchManager", "Auto-auth failed: \(error.localizedDescription)")

@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 struct DeviceDetailView: View {
     @EnvironmentObject var watchManager: WatchManager
     @StateObject private var logManager = LogManager.shared
-    @State private var showingNotificationTest = false
     @State private var isSyncingTime = false
     @State private var showingAppInstall = false
     @State private var showingLogExport = false
@@ -191,26 +190,6 @@ struct DeviceDetailView: View {
                 }
                 .disabled(!watchManager.authManager.isAuthenticated || isSyncingTime)
                 
-                // Test Notification
-                Button {
-                    showingNotificationTest = true
-                } label: {
-                    HStack {
-                        Image(systemName: "bell.badge")
-                            .frame(width: 30)
-                        VStack(alignment: .leading) {
-                            Text("Send Test Notification")
-                            if !watchManager.authManager.isAuthenticated {
-                                Text("Works without authentication!")
-                                    .font(.caption2)
-                                    .foregroundColor(.green)
-                            }
-                        }
-                    }
-                }
-                // Notifications don't require auth - they use regular FilePutRequest
-                // Source: FossilHRWatchAdapter.java - playRawNotification
-                
                 // Install App
                 Button {
                     showingAppInstall = true
@@ -238,6 +217,33 @@ struct DeviceDetailView: View {
                         }
                     }
                 }
+            }
+            
+            // Notification Status Section
+            Section {
+                HStack {
+                    Text("ANCS Authorized")
+                    Spacer()
+                    HStack {
+                        Circle()
+                            .fill(watchManager.ancsAuthorized ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text(watchManager.ancsAuthorized ? "Yes" : "No")
+                    }
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("⚠️ Notifications are not yet implemented.")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Text("Fossil HR watches require proprietary notification forwarding (not standard ANCS). See docs/NOTIFICATION_RESEARCH.md for details.")
+                        .font(.caption2)
+                }
+                .foregroundColor(.secondary)
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text("Research on notification protocol is documented but not yet functional.")
             }
             
             // Status Message
@@ -275,9 +281,6 @@ struct DeviceDetailView: View {
             }
         }
         .navigationTitle("Watch")
-        .sheet(isPresented: $showingNotificationTest) {
-            TestNotificationView()
-        }
         .sheet(isPresented: $showingAppInstall) {
             AppInstallView()
         }
@@ -394,96 +397,6 @@ struct DeviceDetailView: View {
             } catch {
                 statusMessage = "Auth failed: \(error.localizedDescription)"
             }
-        }
-    }
-}
-
-/// View for sending test notifications
-struct TestNotificationView: View {
-    @EnvironmentObject var watchManager: WatchManager
-    @Environment(\.dismiss) var dismiss
-    
-    @State private var title = "Test Notification"
-    @State private var sender = "Hybrid HR Bridge"
-    @State private var message = "Hello from iOS!"
-    @State private var selectedType: NotificationType = .notification
-    @State private var isSending = false
-    @State private var statusMessage: String?
-    
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Notification") {
-                    TextField("Title", text: $title)
-                    TextField("Sender", text: $sender)
-                    TextField("Message", text: $message, axis: .vertical)
-                        .lineLimit(3...6)
-                }
-                
-                Section("Type") {
-                    Picker("Type", selection: $selectedType) {
-                        Text("Notification").tag(NotificationType.notification)
-                        Text("Text").tag(NotificationType.text)
-                        Text("Email").tag(NotificationType.email)
-                        Text("Calendar").tag(NotificationType.calendar)
-                        Text("Call").tag(NotificationType.incomingCall)
-                    }
-                }
-                
-                Section {
-                    Button {
-                        sendNotification()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if isSending {
-                                ProgressView()
-                                    .padding(.trailing, 8)
-                            }
-                            Text("Send")
-                            Spacer()
-                        }
-                    }
-                    .disabled(isSending || title.isEmpty)
-                }
-                
-                if let message = statusMessage {
-                    Section {
-                        Text(message)
-                            .foregroundColor(message.contains("Success") ? .green : .red)
-                    }
-                }
-            }
-            .navigationTitle("Test Notification")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-    
-    private func sendNotification() {
-        isSending = true
-        statusMessage = nil
-        
-        Task {
-            do {
-                try await watchManager.sendNotification(
-                    type: selectedType,
-                    title: title,
-                    sender: sender,
-                    message: message,
-                    appIdentifier: "com.hybridhrbridge.test"
-                )
-                statusMessage = "Success! Check your watch."
-            } catch {
-                statusMessage = "Failed: \(error.localizedDescription)"
-            }
-            isSending = false
         }
     }
 }
