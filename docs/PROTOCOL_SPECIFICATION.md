@@ -798,35 +798,25 @@ Bytes 32-51: Additional metadata
 | SpO2 | 0xD6 | Blood oxygen readings | 4-7 bytes |
 | Unknown | 0xE3 | Unknown data | Variable |
 
-### Main Activity Sample (0xCE type, 4 bytes per sample)
+### Main Activity Sample (0xCE type)
 
-**Source:** [ActivityFileParser.java#L150-L220](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/parser/ActivityFileParser.java#L150-L220)
+**Source:** [ActivityFileParser.java#L207-L223](https://codeberg.org/Freeyourgadget/Gadgetbridge/src/branch/master/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/parser/ActivityFileParser.java#L207-L223)
 
-Each sample represents **1 minute** of activity data:
+Activity samples are parsed from variability bytes (`lower` and `higher`) and other attributes.
 
-```
-Byte 0: variability[0] - encodes step count bits and variability
-Byte 1: variability[1] - encodes heart rate quality and variability
-Byte 2: heartRate - raw heart rate value
-Byte 3: caloriesBurned - calorie count for this minute
-```
+**Step Count Decoding:**
 
-**Variability Byte Decoding:**
+The step count encoding depends on the LSB (bit 0) of the `lower` variability byte:
 
-```
-// Byte 0 bits:
-stepCount = (variability[0] & 0x1F) << 2    // bits 0-4 shifted left 2
-isActive = (variability[0] & 0x20) != 0     // bit 5
-wornMin = (variability[0] & 0xC0) >> 6      // bits 6-7
+1. **If bit 0 is SET (1):**
+   - Steps are in bits 1-3 (mask `0x0E`)
+   - `stepCount = (lower & 0x0E) >> 1`
 
-// Byte 1 bits:
-stepCount |= (variability[1] & 0x03)        // bits 0-1 added to step count
-hrQuality = (variability[1] & 0x1C) >> 2    // bits 2-4 (heart rate quality)
-var = (variability[1] & 0xE0) >> 5          // bits 5-7 (HRV data)
+2. **If bit 0 is UNSET (0):**
+   - Steps are in bits 1-7 (mask `0xFE`)
+   - `stepCount = (lower & 0xFE) >> 1`
 
-// Combined step count:
-finalStepCount = ((variability[0] & 0x1F) << 2) | (variability[1] & 0x03)
-```
+**Note:** Previous documentation suggested a complex shift/merge with the second byte, but empirical testing confirms the simple masked right-shift is correct for this device generation.
 
 **Heart Rate Quality Values:**
 

@@ -333,13 +333,13 @@ final class ActivityFileParser {
     }
     
     /// Parse variability bytes to extract step count and heart rate variability
-    /// Source: ActivityFileParser.java#L207-L223
+    /// Source: ActivityFileParser.java#L253-L270
     private func parseVariabilityBytes(lower: UInt8, higher: UInt8) {
         if (lower & 0b0000001) == 0b0000001 {
+            // Low step count mode - bits 1-3 contain steps (0-14 range, even numbers only)
             currentSample?.maxVariability = Int(higher & 0b00000011) * 25 + 1
-            // Shift right by 1 because the first bit is a flag
-            currentSample?.stepCount = Int((lower & 0b1110) >> 1)
-            
+            currentSample?.stepCount = Int(lower & 0b1110)  // Do NOT shift - Gadgetbridge doesn't shift
+
             if (lower & 0b10000000) == 0b10000000 {
                 let factor = Int((lower >> 4) & 0b111)
                 currentSample?.variability = 512 + factor * 64 + Int((higher >> 2) & 0b111111)
@@ -350,8 +350,8 @@ final class ActivityFileParser {
                 currentSample?.variability = variability
             }
         } else {
-            // Shift right by 1 because the first bit is a flag
-            currentSample?.stepCount = Int((lower & 0b11111110) >> 1)
+            // High step count mode - bits 1-7 contain steps (0-254 range, even numbers only)
+            currentSample?.stepCount = Int(lower & 0b11111110)  // Do NOT shift - Gadgetbridge doesn't shift
             currentSample?.variability = Int(higher) * Int(higher) * 64
             currentSample?.maxVariability = 10000
         }
