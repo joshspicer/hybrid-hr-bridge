@@ -287,6 +287,95 @@ final class BluetoothManager: NSObject, ObservableObject {
         // Note: iOS negotiates MTU automatically, but we can check the maximum
         // write length for the characteristic
     }
+
+    /// Subscribe to a characteristic and set up a notification handler
+    /// Works for any characteristic, including those not in FossilConstants
+    /// - Parameters:
+    ///   - characteristic: The characteristic UUID to subscribe to
+    ///   - handler: Handler called when the characteristic value updates
+    func subscribeToCharacteristic(_ characteristic: CBUUID, handler: @escaping (Data) -> Void) async throws {
+        guard let device = connectedDevice else {
+            throw BluetoothError.characteristicNotFound
+        }
+
+        // Check if we already have this characteristic discovered
+        if let char = device.characteristics[characteristic] {
+            // Register handler and enable notifications
+            characteristicUpdateHandlers[characteristic] = handler
+            device.peripheral.setNotifyValue(true, for: char)
+            logger.info("BLE", "Subscribed to characteristic: \(characteristic)")
+            return
+        }
+
+        // For characteristics not in our main service (like Heart Rate),
+        // we need to discover the appropriate service first
+        // Standard Heart Rate Service UUID
+        let heartRateServiceUUID = CBUUID(string: "0000180D-0000-1000-8000-00805f9b34fb")
+
+        // Check if we need to discover additional services
+        if characteristic == FossilConstants.characteristicHeartRate {
+            // Discover Heart Rate service if not already discovered
+            if let services = device.peripheral.services,
+               let hrService = services.first(where: { $0.uuid == heartRateServiceUUID }) {
+                // Service exists, discover characteristics
+                await discoverAndSubscribe(characteristic: characteristic, in: hrService, handler: handler)
+            } else {
+                // Discover all services to find heart rate
+                logger.info("BLE", "Discovering Heart Rate service...")
+                device.peripheral.discoverServices([heartRateServiceUUID])
+
+                // Wait a moment for discovery
+                try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+
+                if let services = device.peripheral.services,
+                   let hrService = services.first(where: { $0.uuid == heartRateServiceUUID }) {
+                    await discoverAndSubscribe(characteristic: characteristic, in: hrService, handler: handler)
+                } else {
+                    logger.warning("BLE", "Heart Rate service not found on device")
+                    throw BluetoothError.characteristicNotFound
+                }
+            }
+        } else {
+            throw BluetoothError.characteristicNotFound
+        }
+    }
+
+    /// Helper to discover a characteristic in a service and subscribe
+    private func discoverAndSubscribe(characteristic: CBUUID, in service: CBService, handler: @escaping (Data) -> Void) async {
+        guard let device = connectedDevice else { return }
+
+        // Discover characteristics if not already done
+        if service.characteristics == nil || service.characteristics?.isEmpty == true {
+            device.peripheral.discoverCharacteristics([characteristic], for: service)
+
+            // Wait for discovery
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second
+        }
+
+        if let char = service.characteristics?.first(where: { $0.uuid == characteristic }) {
+            connectedDevice?.characteristics[characteristic] = char
+            characteristicUpdateHandlers[characteristic] = handler
+            device.peripheral.setNotifyValue(true, for: char)
+            logger.info("BLE", "Subscribed to characteristic: \(characteristic)")
+        } else {
+            logger.warning("BLE", "Characteristic \(characteristic) not found in service")
+        }
+    }
+
+    /// Unsubscribe from a characteristic
+    /// - Parameter characteristic: The characteristic UUID to unsubscribe from
+    func unsubscribeFromCharacteristic(_ characteristic: CBUUID) async throws {
+        guard let device = connectedDevice,
+              let char = device.characteristics[characteristic] else {
+            // Not an error if characteristic wasn't found - just means we weren't subscribed
+            characteristicUpdateHandlers.removeValue(forKey: characteristic)
+            return
+        }
+
+        device.peripheral.setNotifyValue(false, for: char)
+        characteristicUpdateHandlers.removeValue(forKey: characteristic)
+        logger.info("BLE", "Unsubscribed from characteristic: \(characteristic)")
+    }
 }
 
 // MARK: - CBCentralManagerDelegate
