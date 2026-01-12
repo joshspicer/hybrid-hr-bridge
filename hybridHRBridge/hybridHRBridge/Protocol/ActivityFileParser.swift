@@ -337,7 +337,8 @@ final class ActivityFileParser {
     private func parseVariabilityBytes(lower: UInt8, higher: UInt8) {
         if (lower & 0b0000001) == 0b0000001 {
             currentSample?.maxVariability = Int(higher & 0b00000011) * 25 + 1
-            currentSample?.stepCount = Int(lower & 0b1110)
+            // Shift right by 1 because the first bit is a flag
+            currentSample?.stepCount = Int((lower & 0b1110) >> 1)
             
             if (lower & 0b10000000) == 0b10000000 {
                 let factor = Int((lower >> 4) & 0b111)
@@ -349,7 +350,8 @@ final class ActivityFileParser {
                 currentSample?.variability = variability
             }
         } else {
-            currentSample?.stepCount = Int(lower & 0b11111110)
+            // Shift right by 1 because the first bit is a flag
+            currentSample?.stepCount = Int((lower & 0b11111110) >> 1)
             currentSample?.variability = Int(higher) * Int(higher) * 64
             currentSample?.maxVariability = 10000
         }
