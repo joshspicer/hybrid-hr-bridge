@@ -88,9 +88,13 @@ struct BatteryStatusView: View {
 }
 
 #Preview {
-    List {
+    var testWatch = WatchDevice(id: UUID(), name: "Test Watch")
+    testWatch.batteryLevel = 75
+    testWatch.batteryVoltageMillivolts = 3200
+
+    return List {
         BatteryStatusView(
-            watch: WatchDevice(id: UUID(), name: "Test Watch", batteryLevel: 75, batteryVoltageMillivolts: 3200),
+            watch: testWatch,
             isRefreshing: false,
             isAuthenticated: true,
             onRefresh: {}

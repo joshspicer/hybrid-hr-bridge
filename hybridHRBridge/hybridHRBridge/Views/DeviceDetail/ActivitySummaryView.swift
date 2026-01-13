@@ -103,7 +103,7 @@ struct ActivitySummaryView: View {
 #Preview {
     List {
         ActivitySummaryView(
-            activityData: ActivityData(totalSteps: 8524, totalCalories: 320, averageHeartRate: 72, entries: []),
+            activityData: ActivityData(samples: [], spo2Samples: [], workoutSummaries: []),
             isRefreshing: false,
             isAuthenticated: true,
             onRefresh: {},

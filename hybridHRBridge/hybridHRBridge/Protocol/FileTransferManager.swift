@@ -249,21 +249,29 @@ final class FileTransferManager: ObservableObject {
         print("[FileTransfer] App installed (\(wappData.count) bytes)")
     }
 
-    /// Read battery information from the configuration file
-    /// Source: ConfigurationGetRequest.java#L20-L73 and BatteryConfigItem
-    func readBatteryStatus() async throws -> BatteryStatus {
-        logger.info("Battery", "Requesting battery status from watch")
-
-        // Use the encrypted file reader to fetch the configuration file
+    /// Fetch an encrypted file from the watch
+    /// - Parameter handle: The file handle to fetch
+    /// - Returns: The decrypted file data
+    func fetchEncryptedFile(for handle: FileHandle) async throws -> Data {
+        // Use the encrypted file reader to fetch the file
         guard !isOperationInProgress else {
-            logger.warning("Battery", "Another file operation is already in progress")
+            logger.warning("FileTransfer", "Another file operation is already in progress")
             throw FileTransferError.transferInProgress
         }
 
         isOperationInProgress = true
         defer { isOperationInProgress = false }
 
-        let fileData = try await encryptedFileReader.fetchEncryptedFile(for: .configuration)
+        return try await encryptedFileReader.fetchEncryptedFile(for: handle)
+    }
+
+    /// Read battery information from the configuration file
+    /// Source: ConfigurationGetRequest.java#L20-L73 and BatteryConfigItem
+    func readBatteryStatus() async throws -> BatteryStatus {
+        logger.info("Battery", "Requesting battery status from watch")
+
+        // Use the fetchEncryptedFile method which handles the operation lock
+        let fileData = try await fetchEncryptedFile(for: .configuration)
         logger.debug("Battery", "Received configuration file: \(fileData.count) bytes")
         logger.debug("Battery", "Full file (hex): \(fileData.hexString)")
 
