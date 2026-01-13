@@ -88,7 +88,7 @@ final class LogManager: ObservableObject {
         // Configure default endpoint for remote logging
         // Users can change this via the debug console settings (shake to open)
         EndpointManager.defaultHost = "localhost"
-        EndpointManager.defaultPort = 8080
+        EndpointManager.defaultPort = 7990
         
         // Configure InnerLoop (shake gesture enabled for debug builds)
         let bundleId = Bundle.main.bundleIdentifier ?? "com.hybridhrbridge"
