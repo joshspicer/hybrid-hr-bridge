@@ -201,62 +201,82 @@ final class BluetoothManager: NSObject, ObservableObject {
     
     /// Write data to a characteristic
     func write(data: Data, to characteristic: CBUUID, type: CBCharacteristicWriteType = .withResponse) async throws {
-        guard let device = connectedDevice,
-              let char = device.characteristics[characteristic] else {
+        guard let device = connectedDevice else {
+            logger.error("BLE", "Write failed: no connected device")
+            throw BluetoothError.characteristicNotFound
+        }
+
+        guard let char = device.characteristics[characteristic] else {
+            logger.error("BLE", "Write failed: characteristic \(characteristic) not found")
+            logger.error("BLE", "Available characteristics: \(device.characteristics.keys.map { $0.uuidString }.joined(separator: ", "))")
+            logger.error("BLE", "Device has \(device.characteristics.count) characteristics total")
+            logger.error("BLE", "Connection state: \(connectionState)")
+            logger.error("BLE", "Is device ready: \(device.isReady)")
+            logger.error("BLE", "Is notifications ready: \(device.isNotificationsReady)")
             print("[BLE] Write failed: characteristic not found \(characteristic)")
             throw BluetoothError.characteristicNotFound
         }
-        
+
         // Determine the best write type based on characteristic properties
         var actualType = type
         if type == .withResponse && !char.properties.contains(.write) {
             // Characteristic doesn't support write with response, try without
             if char.properties.contains(.writeWithoutResponse) {
                 print("[BLE] Characteristic \(characteristic) doesn't support .withResponse, using .withoutResponse")
+                logger.debug("BLE", "Characteristic \(characteristic) doesn't support .withResponse, using .withoutResponse")
                 actualType = .withoutResponse
             } else {
                 print("[BLE] Characteristic \(characteristic) doesn't support any write type")
+                logger.error("BLE", "Characteristic \(characteristic) doesn't support any write type")
                 throw BluetoothError.characteristicNotWritable
             }
         } else if type == .withoutResponse && !char.properties.contains(.writeWithoutResponse) {
             // Characteristic doesn't support write without response, try with
             if char.properties.contains(.write) {
                 print("[BLE] Characteristic \(characteristic) doesn't support .withoutResponse, using .withResponse")
+                logger.debug("BLE", "Characteristic \(characteristic) doesn't support .withoutResponse, using .withResponse")
                 actualType = .withResponse
             } else {
                 print("[BLE] Characteristic \(characteristic) doesn't support any write type")
+                logger.error("BLE", "Characteristic \(characteristic) doesn't support any write type")
                 throw BluetoothError.characteristicNotWritable
             }
         }
-        
+
         // Check if there's already a pending write to this characteristic
         if writeCompletions[characteristic] != nil {
             print("[BLE] Warning: write already pending for \(characteristic), waiting...")
+            logger.warning("BLE", "Write already pending for \(characteristic), waiting 100ms...")
             // Wait a bit for the pending write to complete
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             if writeCompletions[characteristic] != nil {
                 print("[BLE] Cancelling stale write completion for \(characteristic)")
+                logger.warning("BLE", "Cancelling stale write completion for \(characteristic)")
                 writeCompletions.removeValue(forKey: characteristic)
             }
         }
-        
+
         print("[BLE] Writing \(data.count) bytes to \(characteristic) (type: \(actualType == .withResponse ? "withResponse" : "withoutResponse"))")
-        
+        logger.debug("BLE", "Writing \(data.count) bytes to \(characteristic): \(data.hexString)")
+
         return try await withCheckedThrowingContinuation { continuation in
             if actualType == .withResponse {
                 writeCompletions[characteristic] = { [weak self] error in
                     self?.writeCompletions.removeValue(forKey: characteristic)
                     if let error = error {
+                        self?.logger.error("BLE", "Write to \(characteristic) failed: \(error.localizedDescription)")
                         continuation.resume(throwing: BluetoothError.writeFailed(error))
                     } else {
+                        self?.logger.debug("BLE", "Write to \(characteristic) succeeded")
                         continuation.resume()
                     }
                 }
-                
+
                 device.peripheral.writeValue(data, for: char, type: actualType)
             } else {
                 // For withoutResponse, we complete immediately after writing
                 device.peripheral.writeValue(data, for: char, type: actualType)
+                logger.debug("BLE", "Write to \(characteristic) completed (no response expected)")
                 continuation.resume()
             }
         }
@@ -518,11 +538,15 @@ extension BluetoothManager: CBPeripheralDelegate {
                 lastError = .serviceDiscoveryFailed(error)
                 return
             }
-            
-            guard let services = peripheral.services else { return }
-            
+
+            guard let services = peripheral.services else {
+                logger.warning("BLE", "No services discovered")
+                return
+            }
+
             logger.info("BLE", "Discovered \(services.count) services")
-            
+            print("[BLE] Discovered \(services.count) services")
+
             // ANCS Service UUID - if present, watch can subscribe to iOS notifications
             let ancsServiceUUID = CBUUID(string: "7905F431-B5CE-4E99-A40F-4B1E122D00D0")
             // Standard BLE service UUIDs for reference
@@ -534,34 +558,36 @@ extension BluetoothManager: CBPeripheralDelegate {
                 ancsServiceUUID: "Apple Notification Center Service (ANCS)",
                 FossilConstants.serviceUUID: "Fossil Proprietary Service"
             ]
-            
+
             var hasANCS = false
             var hasFossil = false
-            
+
             for service in services {
                 let serviceName = knownServices[service.uuid] ?? "Unknown"
                 print("[BLE] Discovered service: \(service.uuid) (\(serviceName))")
                 logger.debug("BLE", "Service: \(service.uuid) - \(serviceName)")
-                
+
                 if service.uuid == ancsServiceUUID {
                     hasANCS = true
                     // Discover ANCS characteristics to understand what watch supports
+                    logger.debug("BLE", "Discovering characteristics for ANCS service...")
                     peripheral.discoverCharacteristics(nil, for: service)
                 }
-                
+
                 if service.uuid == FossilConstants.serviceUUID {
                     hasFossil = true
+                    logger.debug("BLE", "Discovering \(FossilConstants.allCharacteristics.count) characteristics for Fossil service...")
                     peripheral.discoverCharacteristics(FossilConstants.allCharacteristics, for: service)
                 }
             }
-            
+
             // Log ANCS capability summary
             if hasANCS {
                 logger.info("BLE", "✅ Watch EXPOSES ANCS service - it can receive notifications FROM iOS")
             } else {
                 logger.info("BLE", "Watch does not expose ANCS service - this is normal, watch may SUBSCRIBE to iOS's ANCS instead")
             }
-            
+
             if hasFossil {
                 logger.info("BLE", "✅ Fossil proprietary service found")
             } else {
@@ -574,12 +600,18 @@ extension BluetoothManager: CBPeripheralDelegate {
         Task { @MainActor in
             if let error = error {
                 print("[BLE] Characteristic discovery error: \(error)")
+                logger.error("BLE", "Characteristic discovery error for service \(service.uuid): \(error.localizedDescription)")
                 lastError = .characteristicDiscoveryFailed(error)
                 return
             }
-            
-            guard let characteristics = service.characteristics else { return }
-            
+
+            guard let characteristics = service.characteristics else {
+                logger.warning("BLE", "No characteristics discovered for service \(service.uuid)")
+                return
+            }
+
+            logger.info("BLE", "Discovered \(characteristics.count) characteristics for service \(service.uuid)")
+
             for characteristic in characteristics {
                 // Log characteristic properties to help debug write type issues
                 var props: [String] = []
@@ -588,23 +620,43 @@ extension BluetoothManager: CBPeripheralDelegate {
                 if characteristic.properties.contains(.writeWithoutResponse) { props.append("writeWithoutResponse") }
                 if characteristic.properties.contains(.notify) { props.append("notify") }
                 if characteristic.properties.contains(.indicate) { props.append("indicate") }
-                print("[BLE] Discovered characteristic: \(characteristic.uuid) [\(props.joined(separator: ", "))]")
-                
+
+                let propsString = props.joined(separator: ", ")
+                print("[BLE] Discovered characteristic: \(characteristic.uuid) [\(propsString)]")
+                logger.debug("BLE", "Characteristic \(characteristic.uuid): [\(propsString)]")
+
+                // Store the characteristic
                 connectedDevice?.characteristics[characteristic.uuid] = characteristic
-                
+                logger.debug("BLE", "Stored characteristic \(characteristic.uuid) in connectedDevice")
+
                 // Enable notifications/indications for characteristics that support it
                 // Note: Some Fossil characteristics use .indicate instead of .notify
                 // setNotifyValue works for both - the system handles the difference
                 if characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) {
+                    logger.debug("BLE", "Enabling notifications for \(characteristic.uuid)...")
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
             }
-            
+
+            // Log current characteristic state
+            if let device = connectedDevice {
+                logger.info("BLE", "Current state: \(device.characteristics.count) characteristics stored")
+                logger.debug("BLE", "Stored UUIDs: \(device.characteristics.keys.map { $0.uuidString }.joined(separator: ", "))")
+            }
+
             // Check if we have all characteristics
             // Note: We wait until didUpdateNotificationStateFor confirms all notifications
             // are enabled before declaring the device ready
             if connectedDevice?.isReady == true {
                 print("[BLE] All characteristics discovered, waiting for notification states...")
+                logger.info("BLE", "All required characteristics discovered, waiting for notification confirmations...")
+            } else {
+                let missing = FossilConstants.allCharacteristics.filter { uuid in
+                    connectedDevice?.characteristics[uuid] == nil
+                }
+                if !missing.isEmpty {
+                    logger.warning("BLE", "Still waiting for \(missing.count) characteristics: \(missing.map { $0.uuidString }.joined(separator: ", "))")
+                }
             }
         }
     }
@@ -648,18 +700,53 @@ extension BluetoothManager: CBPeripheralDelegate {
         Task { @MainActor in
             if let error = error {
                 print("[BLE] Notification state error for \(characteristic.uuid): \(error)")
+                logger.error("BLE", "Failed to enable notifications for \(characteristic.uuid): \(error.localizedDescription)")
             } else {
                 print("[BLE] Notifications \(characteristic.isNotifying ? "enabled" : "disabled") for \(characteristic.uuid)")
-                
+                logger.info("BLE", "Notifications \(characteristic.isNotifying ? "✅ enabled" : "❌ disabled") for \(characteristic.uuid)")
+
                 // Track enabled notifications
                 if characteristic.isNotifying {
                     connectedDevice?.notificationsEnabled.insert(characteristic.uuid)
-                    
+
+                    // Log current notification state
+                    if let device = connectedDevice {
+                        let enabledCount = device.notificationsEnabled.count
+                        let totalRequired = FossilConstants.allCharacteristics.filter { uuid in
+                            if let char = device.characteristics[uuid] {
+                                return char.properties.contains(.notify) || char.properties.contains(.indicate)
+                            }
+                            return false
+                        }.count
+
+                        logger.debug("BLE", "Notification progress: \(enabledCount)/\(totalRequired) characteristics ready")
+
+                        // List which ones are still pending
+                        let pending = FossilConstants.allCharacteristics.filter { uuid in
+                            if let char = device.characteristics[uuid] {
+                                let needsNotify = char.properties.contains(.notify) || char.properties.contains(.indicate)
+                                return needsNotify && !device.notificationsEnabled.contains(uuid)
+                            }
+                            return false
+                        }
+                        if !pending.isEmpty {
+                            logger.debug("BLE", "Still waiting for notifications on: \(pending.map { $0.uuidString }.joined(separator: ", "))")
+                        }
+                    }
+
                     // Check if we're now fully ready (all characteristics + all notifications)
                     // Only trigger authentication transition ONCE
                     if !hasTransitionedToAuthenticating && connectedDevice?.isNotificationsReady == true {
                         hasTransitionedToAuthenticating = true
                         print("[BLE] All notifications enabled, device ready for authentication")
+                        logger.info("BLE", "🎉 All notifications enabled! Device ready for authentication")
+
+                        // Log final characteristic state for debugging
+                        if let device = connectedDevice {
+                            logger.debug("BLE", "Final state: \(device.characteristics.count) characteristics, \(device.notificationsEnabled.count) notifications enabled")
+                            logger.debug("BLE", "Authentication characteristic available: \(device.characteristics[FossilConstants.characteristicAuthentication] != nil ? "YES ✅" : "NO ❌")")
+                        }
+
                         connectionState = .authenticating
                     }
                 }

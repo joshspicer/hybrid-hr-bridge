@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CoreBluetooth
 
 /// Handles AES-128 authentication with Fossil Hybrid HR watches
 /// Source: VerifyPrivateKeyRequest.java#L40-L134
@@ -106,13 +107,25 @@ final class AuthenticationManager: ObservableObject {
             throw AuthError.noSecretKey
         }
 
+        // CRITICAL: Verify the authentication characteristic is available before proceeding
+        // This prevents the "auth failed characteristic not found" error on first open
+        guard bluetoothManager.connectedDevice?.characteristics[FossilConstants.characteristicAuthentication] != nil else {
+            logger.error("Auth", "Authentication characteristic not discovered yet!")
+            logger.error("Auth", "Available characteristics: \(bluetoothManager.connectedDevice?.characteristics.keys.map { $0.uuidString }.joined(separator: ", ") ?? "none")")
+            logger.error("Auth", "Is device ready: \(bluetoothManager.connectedDevice?.isReady ?? false)")
+            logger.error("Auth", "Is notifications ready: \(bluetoothManager.connectedDevice?.isNotificationsReady ?? false)")
+            isAuthenticating = false
+            throw AuthError.characteristicNotAvailable
+        }
+
         logger.debug("Auth", "Secret key available, proceeding with authentication")
+        logger.debug("Auth", "Authentication characteristic confirmed available")
         authState = .sendingChallenge
 
         // Generate 8 random bytes for challenge
         phoneRandomNumber = AESCrypto.generateRandomBytes(count: 8)
         logger.debug("Auth", "Generated phone random number: \(phoneRandomNumber!.hexString)")
-        
+
         // Register handler for authentication responses
         logger.debug("Auth", "Registering notification handler for authentication characteristic")
         bluetoothManager.registerNotificationHandler(for: FossilConstants.characteristicAuthentication) { [weak self] data in
@@ -138,7 +151,7 @@ final class AuthenticationManager: ObservableObject {
 
         authState = .awaitingResponse
         logger.info("Auth", "Challenge sent, awaiting watch response...")
-        
+
         // Wait for authentication to complete
         logger.debug("Auth", "Waiting for authentication to complete (10 second timeout)")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -596,7 +609,8 @@ enum AuthError: Error, LocalizedError {
     case decryptionFailed(Error)
     case writeFailed(Error)
     case rejected
-    
+    case characteristicNotAvailable
+
     var errorDescription: String? {
         switch self {
         case .noSecretKey:
@@ -615,6 +629,8 @@ enum AuthError: Error, LocalizedError {
             return "Failed to send response: \(error.localizedDescription)"
         case .rejected:
             return "Authentication rejected by watch"
+        case .characteristicNotAvailable:
+            return "Authentication characteristic not yet discovered. Please wait for device initialization to complete."
         }
     }
 }
