@@ -85,12 +85,16 @@ final class LogManager: ObservableObject {
         // Set up InnerLoop with our custom destination for in-app viewing
         inAppDestination.logManager = self
         
+        // Configure default endpoint for remote logging
+        // Users can change this via the debug console settings (shake to open)
+        EndpointManager.defaultHost = "localhost"
+        EndpointManager.defaultPort = 8080
+        
         // Configure InnerLoop (shake gesture enabled for debug builds)
-        // Note: appId and sharedSecret are required but we use placeholders for local-only logging
         let bundleId = Bundle.main.bundleIdentifier ?? "com.hybridhrbridge"
         let config = InnerLoopConfiguration(
             appId: bundleId,
-            sharedSecret: "local-only",  // Not sending to remote server
+            sharedSecret: "hybrid-hr-bridge-dev",
             enableShakeGesture: true,
             environment: "development",
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -101,6 +105,11 @@ final class LogManager: ObservableObject {
         InnerLoop.shared.logger.addDestination(inAppDestination)
         
         InnerLoop.shared.info("LogManager", "LogManager initialized with InnerLoop")
+        if EndpointManager.shared.isEnabled {
+            InnerLoop.shared.info("LogManager", "Remote logging enabled: \(EndpointManager.shared.endpointString)")
+        } else {
+            InnerLoop.shared.info("LogManager", "Remote logging disabled - shake device to configure endpoint")
+        }
     }
     
     // MARK: - Internal Methods
