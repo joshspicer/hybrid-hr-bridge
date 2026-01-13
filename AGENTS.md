@@ -97,8 +97,8 @@ final class MyManager {
 ALWAYS CROSS REFERENCE WITH A RELIABLE PRIMARY SOURCE BEFORE ANY CHANGE!
 
 - **Gadgetbridge Source**: https://codeberg.org/Freeyourgadget/Gadgetbridge
-  - Local clone at `/Users/josh/git/Gadgetbridge`
-  - One Key path: `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/`
+  - **Git submodule**: `external/Gadgetbridge/` (see [docs/GADGETBRIDGE_SUBMODULE.md](../docs/GADGETBRIDGE_SUBMODULE.md) for usage)
+  - Key path: `external/Gadgetbridge/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/`
 - **Fossil HR SDK**: https://github.com/dakhnod/Fossil-HR-SDK (for building custom watch apps)
 - **Apple Docs**: Use the `apple-developer-docs-mcp` to fetch iOS specific information (eg: bluetooth classes, etc.)
 
