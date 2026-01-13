@@ -423,8 +423,12 @@ final class EncryptedFileReader {
     // MARK: - Cleanup
 
     private func cleanupReadHandlers() {
-        bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicFileOperations)
-        bluetoothManager.unregisterNotificationHandler(for: FossilConstants.characteristicFileData)
+        // NOTE: Do NOT unregister notification handlers here!
+        // BluetoothManager only supports ONE handler per characteristic at a time.
+        // When we register handlers at the start of an operation, we automatically replace any previous handler.
+        // Unregistering here would break any subsequent operations that expect handlers to be present.
+        // The next operation will register its own handlers, which will naturally replace ours.
+        // We only need to cancel the timeout task and clear state.
         readTimeoutTask?.cancel()
         readTimeoutTask = nil
     }
