@@ -14,11 +14,17 @@ final class WatchManager: ObservableObject {
     @Published private(set) var lastError: Error?
     
     // MARK: - Managers
-    
+
     let bluetoothManager: BluetoothManager
     let authManager: AuthenticationManager
     let fileTransferManager: FileTransferManager
     let activityDataManager: ActivityDataManager
+    let vibrationManager: VibrationManager
+    let musicManager: MusicControlManager
+    let heartRateManager: HeartRateManager
+    let notificationManager: NotificationManager
+    let alarmManager: AlarmManager
+    let deviceInfoManager: DeviceInfoManager
     
     // MARK: - Computed Properties
     
@@ -46,6 +52,12 @@ final class WatchManager: ObservableObject {
         fileTransferManager = FileTransferManager(bluetoothManager: bluetoothManager, authManager: authManager)
         // Share the FileTransferManager with ActivityDataManager to prevent handler conflicts
         activityDataManager = ActivityDataManager(fileTransferManager: fileTransferManager, authManager: authManager)
+        vibrationManager = VibrationManager(bluetoothManager: bluetoothManager)
+        musicManager = MusicControlManager(bluetoothManager: bluetoothManager, fileTransferManager: fileTransferManager)
+        heartRateManager = HeartRateManager(bluetoothManager: bluetoothManager)
+        notificationManager = NotificationManager(fileTransferManager: fileTransferManager)
+        alarmManager = AlarmManager(fileTransferManager: fileTransferManager)
+        deviceInfoManager = DeviceInfoManager(bluetoothManager: bluetoothManager)
 
         loadSavedDevices()
         setupBindings()
@@ -206,7 +218,6 @@ final class WatchManager: ObservableObject {
         try await installApp(data)
     }
 
-    /// Refresh battery status by reading encrypted configuration file
     func refreshBatteryStatus() async throws -> BatteryStatus {
         guard authManager.isAuthenticated else {
             throw WatchManagerError.notAuthenticated
@@ -232,6 +243,134 @@ final class WatchManager: ObservableObject {
         }
 
         return status
+    }
+    
+    // MARK: - Find Watch
+    
+    /// Vibrate the watch to help find it
+    func findWatch() async throws {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+        
+        // Use a noticeable vibration pattern (e.g. triple normal)
+        try await vibrationManager.sendVibration(.tripleNormal)
+        logger.info("WatchManager", "Find Watch command sent")
+    }
+    
+    // MARK: - Music Control
+    
+    /// Send a music control command
+    func sendMusicCommand(_ command: MusicControlManager.MusicCommand) async throws {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+        
+        try await musicManager.sendCommand(command)
+    }
+    
+    /// Update music track information
+    func updateMusicInfo(artist: String, album: String, title: String) async throws {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+
+        try await musicManager.updateMusicInfo(artist: artist, album: album, title: title)
+    }
+
+    // MARK: - Heart Rate
+
+    /// Start real-time heart rate monitoring
+    func startHeartRateMonitoring() async throws {
+        guard connectionStatus == .connected else {
+            throw WatchManagerError.notConnected
+        }
+
+        try await heartRateManager.startMonitoring()
+        logger.info("WatchManager", "Heart rate monitoring started")
+    }
+
+    /// Stop heart rate monitoring
+    func stopHeartRateMonitoring() async throws {
+        try await heartRateManager.stopMonitoring()
+        logger.info("WatchManager", "Heart rate monitoring stopped")
+    }
+
+    /// Current heart rate (0 if not monitoring)
+    var currentHeartRate: Int {
+        heartRateManager.currentHeartRate
+    }
+
+    /// Whether heart rate monitoring is active
+    var isMonitoringHeartRate: Bool {
+        heartRateManager.isMonitoring
+    }
+
+    // MARK: - Notifications
+
+    /// Send a notification to the watch
+    func sendNotification(title: String, message: String) async throws {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+
+        try await notificationManager.sendTextNotification(title: title, message: message)
+        logger.info("WatchManager", "Notification sent: \(title)")
+    }
+
+    /// Send an incoming call notification
+    func sendIncomingCall(caller: String) async throws {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+
+        try await notificationManager.sendIncomingCall(caller: caller)
+        logger.info("WatchManager", "Incoming call notification sent: \(caller)")
+    }
+
+    // MARK: - Alarms
+
+    /// Sync all alarms to the watch
+    func syncAlarms() async throws {
+        guard authManager.isAuthenticated else {
+            throw WatchManagerError.notAuthenticated
+        }
+
+        try await alarmManager.syncAlarms()
+        logger.info("WatchManager", "Alarms synced")
+    }
+
+    /// Add a new alarm
+    func addAlarm(hour: Int, minute: Int, enabled: Bool = true, repeatDays: AlarmManager.RepeatDays = .none, title: String = "Alarm") {
+        let alarm = AlarmManager.WatchAlarm(hour: hour, minute: minute, enabled: enabled, repeatDays: repeatDays, title: title)
+        alarmManager.addAlarm(alarm)
+    }
+
+    /// Get all alarms
+    var alarms: [AlarmManager.WatchAlarm] {
+        alarmManager.alarms
+    }
+
+    // MARK: - Device Info
+
+    /// Read device information (firmware, hardware revision, etc.)
+    func readDeviceInfo() async throws {
+        guard connectionStatus != .disconnected else {
+            throw WatchManagerError.notConnected
+        }
+
+        try await deviceInfoManager.readDeviceInfo()
+
+        // Update connected watch with firmware info
+        if let fw = deviceInfoManager.firmwareVersion {
+            connectedWatch?.firmwareVersion = fw
+            logger.info("WatchManager", "Firmware version: \(fw)")
+        }
+    }
+
+    /// Firmware version string
+    var firmwareVersion: String? {
+        deviceInfoManager.firmwareVersion
     }
     
     // MARK: - Device Management

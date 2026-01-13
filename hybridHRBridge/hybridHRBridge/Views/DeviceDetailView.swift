@@ -202,6 +202,66 @@ struct DeviceDetailView: View {
                 }
                 .disabled(!watchManager.authManager.isAuthenticated)
 
+                // Find Watch
+                Button {
+                    findWatch()
+                } label: {
+                    HStack {
+                        Image(systemName: "ipad.and.iphone")
+                            .frame(width: 30)
+                        Text("Find Watch")
+                    }
+                }
+                .disabled(!watchManager.authManager.isAuthenticated)
+                
+                // Music Control Test
+                 Section("Music Control (Test)") {
+                     Button {
+                         updateTestTrack()
+                     } label: {
+                         HStack {
+                             Image(systemName: "music.note")
+                                 .frame(width: 30)
+                             Text("Push 'Test Track' Info")
+                         }
+                     }
+                     .disabled(!watchManager.authManager.isAuthenticated)
+                     
+                     HStack {
+                         Spacer()
+                         Button {
+                             sendMusicCommand(.previous)
+                         } label: {
+                             Image(systemName: "backward.fill")
+                                 .font(.title2)
+                         }
+                         .buttonStyle(.borderless)
+                         
+                         Spacer()
+                         
+                         Button {
+                             sendMusicCommand(.playPause)
+                         } label: {
+                             Image(systemName: "playpause.fill")
+                                 .font(.title2)
+                         }
+                         .buttonStyle(.borderless)
+                         
+                         Spacer()
+                         
+                         Button {
+                             sendMusicCommand(.next)
+                         } label: {
+                             Image(systemName: "forward.fill")
+                                 .font(.title2)
+                         }
+                         .buttonStyle(.borderless)
+                         Spacer()
+                     }
+                     .padding(.vertical, 8)
+                     .disabled(!watchManager.authManager.isAuthenticated)
+                 }
+
                 // Export Logs
                 Button {
                     showingLogExport = true
@@ -396,6 +456,44 @@ struct DeviceDetailView: View {
                 statusMessage = "Authenticated successfully"
             } catch {
                 statusMessage = "Auth failed: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    private func findWatch() {
+        statusMessage = "Sending vibration..."
+        Task {
+            do {
+                try await watchManager.findWatch()
+                statusMessage = "Watch should be vibrating"
+            } catch {
+                statusMessage = "Find device failed: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    private func sendMusicCommand(_ command: MusicControlManager.MusicCommand) {
+        Task {
+            do {
+                try await watchManager.sendMusicCommand(command)
+                statusMessage = "Sent music command: \(command)"
+            } catch {
+                statusMessage = "Music command failed: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    private func updateTestTrack() {
+        Task {
+            do {
+                try await watchManager.updateMusicInfo(
+                    artist: "Test Artist",
+                    album: "Test Album",
+                    title: "Test Track 1"
+                )
+                statusMessage = "Updated track info"
+            } catch {
+                statusMessage = "Update track failed: \(error.localizedDescription)"
             }
         }
     }
