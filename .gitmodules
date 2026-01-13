@@ -3,4 +3,4 @@
 	url = https://codeberg.org/Freeyourgadget/Gadgetbridge.git
 [submodule "external/inner-loop-swift"]
 	path = external/inner-loop-swift
-	url = git@github.com:joshspicer/inner-loop-swift.git
+	url = https://github.com/joshspicer/inner-loop-swift.git
