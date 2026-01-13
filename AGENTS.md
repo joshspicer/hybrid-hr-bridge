@@ -106,12 +106,24 @@ Search on the internet for a reliable source whenever unsure.  This is NOT the k
 
 ## Build & Run
 
+**CRITICAL**: Always build the project with Swift CLI or xcodebuild before considering a feature done. Features that don't compile are not finished!
+
 ```bash
 # Build for simulator (UI testing only - BLE won't work)
-xcodebuild -project hybridHRBridge/hybridHRBridge.xcodeproj -scheme hybridHRBridge -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+cd hybridHRBridge
+xcodebuild -project hybridHRBridge.xcodeproj -scheme hybridHRBridge -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+
+# Alternative: Use swift build if Package.swift exists
+swift build
 
 # For actual BLE testing, deploy to physical iPhone
 ```
+
+**Build Validation Process**:
+1. After making any code changes, ALWAYS run a build before committing
+2. Fix any compilation errors immediately
+3. Verify all imports are correct (e.g., `import CoreBluetooth` for CBUUID types)
+4. Only consider the feature complete after successful build
 
 Use the XcodeMCP Server to check if a physical iPhone is connected. If it is, deploy to the iPhone and test live by connecting to the watch, taking screenshots, inspecting logs, etc...
 

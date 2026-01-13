@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CoreBluetooth
 
 /// Handles AES-128 authentication with Fossil Hybrid HR watches
 /// Source: VerifyPrivateKeyRequest.java#L40-L134
