@@ -1,3 +1,6 @@
 [submodule "external/Gadgetbridge"]
 	path = external/Gadgetbridge
 	url = https://codeberg.org/Freeyourgadget/Gadgetbridge.git
+[submodule "external/inner-loop-swift"]
+	path = external/inner-loop-swift
+	url = git@github.com:joshspicer/inner-loop-swift.git

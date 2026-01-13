@@ -23,6 +23,10 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		INNERLOOP0001 /* InnerLoop in Frameworks */ = {isa = PBXBuildFile; productRef = INNERLOOP0002 /* InnerLoop */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		0A1953672F103FA60019845C /* hybridHRBridge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = hybridHRBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A1953742F103FA70019845C /* hybridHRBridgeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = hybridHRBridgeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				INNERLOOP0001 /* InnerLoop in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = hybridHRBridge;
 			packageProductDependencies = (
+				INNERLOOP0002 /* InnerLoop */,
 			);
 			productName = hybridHRBridge;
 			productReference = 0A1953672F103FA60019845C /* hybridHRBridge.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = 0A19535E2F103FA60019845C;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				INNERLOOP0003 /* XCLocalSwiftPackageReference "inner-loop-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0A1953682F103FA60019845C /* Products */;
 			projectDirPath = "";
@@ -617,6 +626,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		INNERLOOP0003 /* XCLocalSwiftPackageReference "inner-loop-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../external/inner-loop-swift";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		INNERLOOP0002 /* InnerLoop */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = InnerLoop;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0A19535F2F103FA60019845C /* Project object */;
 }
