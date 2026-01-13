@@ -241,7 +241,7 @@ final class EncryptedFileReader {
                 throw FileTransferError.rejected(status)
             }
 
-            let expectedCRC = data.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
+            let expectedCRC = data.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
             let computedCRC = state.lookupBuffer.crc32
 
             guard expectedCRC == computedCRC else {
