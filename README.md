@@ -18,6 +18,23 @@ iOS companion app for Fossil/Skagen Hybrid HR smartwatches, with the goal of rep
 
 1. A Fossil or Skagen Hybrid HR smartwatch
 2. The secret key extracted by MITM'ing skagen app when on first pair of the watch (see [GadgetBridge's docs on this](https://gadgetbridge.org/basics/pairing/fossil-server/))
+3. Git with submodule support for accessing the Gadgetbridge reference implementation
+
+### Cloning the Repository
+
+This repository includes Gadgetbridge as a Git submodule for protocol reference. Clone with submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/joshspicer/hybrid-hr-bridge.git
+```
+
+Or if you've already cloned without submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+For more details on managing the Gadgetbridge submodule, see [docs/GADGETBRIDGE_SUBMODULE.md](docs/GADGETBRIDGE_SUBMODULE.md).
 
 ### Extracting Your Device Key
 

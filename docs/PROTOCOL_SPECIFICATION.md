@@ -1,7 +1,10 @@
 # Fossil/Skagen Hybrid HR Bluetooth Protocol Specification
 
-> Extracted from [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) source code
-> IMPORTANT: ALWAYS cross-reference claims in this doucment with the original primary source.  This document is for convenience only and may contain errors.
+> Extracted from [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) source code (available in this repo as a Git submodule at `external/Gadgetbridge/`)
+>
+> IMPORTANT: ALWAYS cross-reference claims in this document with the original primary source. This document is for convenience only and may contain errors.
+>
+> See [GADGETBRIDGE_SUBMODULE.md](GADGETBRIDGE_SUBMODULE.md) for instructions on accessing and updating the Gadgetbridge reference implementation.
 
 ---
 
@@ -45,7 +48,7 @@
 
 All data transfers use a file-based system with major/minor handles.
 
-**Source:** /Users/josh/git/Gadgetbridge/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/file/FileHandle.java#L1-L74
+**Source:** `external/Gadgetbridge/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/qhybrid/file/FileHandle.java#L1-L74`
 
 | Handle Name | Major | Minor | Hex Value | Purpose |
 |-------------|-------|-------|-----------|---------|
