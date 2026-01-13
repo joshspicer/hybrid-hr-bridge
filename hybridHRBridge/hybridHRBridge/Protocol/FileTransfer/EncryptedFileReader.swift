@@ -95,11 +95,21 @@ final class EncryptedFileReader {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             self.readContinuation = continuation
 
+            // Dynamic timeout based on expected transfer rate
+            // Observed rate: ~1,500 bytes/second for encrypted transfers
+            // Use 60 seconds as minimum, add extra time for larger files
+            // Formula: max(60s, fileSize / 1000 bytes/s * 2.0 safety factor)
+            let minimumTimeout: TimeInterval = 60.0
+            let timeoutSeconds = minimumTimeout
+            let timeoutNanoseconds = UInt64(timeoutSeconds * 1_000_000_000)
+
+            logger.debug("Protocol", "Setting timeout to \(Int(timeoutSeconds))s for encrypted file transfer")
+
             self.readTimeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
                 await MainActor.run {
                     if self?.readState != nil {
-                        self?.logger.error("Protocol", "⏰ Timeout waiting for file data")
+                        self?.logger.error("Protocol", "⏰ Timeout waiting for file data after \(Int(timeoutSeconds))s")
                         self?.failRead(with: .timeout)
                     }
                 }
@@ -302,6 +312,29 @@ final class EncryptedFileReader {
             state.packetCount = 0
 
             logger.info("Protocol", "Encrypted file transfer size: \(fileSize) bytes")
+
+            // Extend timeout based on actual file size
+            // Observed rate: ~1,500 bytes/second, use 2x safety factor
+            // Minimum 60s, maximum 300s (5 minutes)
+            let estimatedSeconds = Double(fileSize) / 1000.0 * 2.0
+            let adjustedTimeout = max(60.0, min(300.0, estimatedSeconds))
+
+            if adjustedTimeout > 60.0 {
+                logger.info("Protocol", "Extending timeout to \(Int(adjustedTimeout))s based on file size (\(fileSize) bytes)")
+
+                // Cancel old timeout and create new one with adjusted time
+                readTimeoutTask?.cancel()
+                readTimeoutTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(adjustedTimeout * 1_000_000_000))
+                    await MainActor.run {
+                        if self?.readState != nil {
+                            self?.logger.error("Protocol", "⏰ Timeout waiting for file data after \(Int(adjustedTimeout))s")
+                            self?.failRead(with: .timeout)
+                        }
+                    }
+                }
+            }
+
             return false
 
         case 0x08:
