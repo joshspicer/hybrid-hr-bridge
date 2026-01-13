@@ -141,3 +141,84 @@ For **any** implementation work:
 - Add logging for state changes
 - Add logging for completion (success or failure)
 - This helps with debugging BLE issues and user support
+
+## Code Organization Guidelines
+
+### File Structure Requirements
+**CRITICAL**: Every new component, feature, or manager MUST be split into individual files. Large files (>400 lines) should be refactored into smaller, focused files.
+
+### Directory Organization
+When creating new features or refactoring existing code:
+
+1. **Protocol Layer** - Group related managers in subdirectories:
+   ```
+   Protocol/
+   ├── FileTransfer/           # File operations
+   │   ├── FileTransferManager.swift
+   │   ├── EncryptedFileReader.swift
+   │   └── FileOperationsState.swift
+   ├── Authentication/         # Auth-related
+   │   ├── AuthenticationManager.swift
+   │   └── AuthenticationState.swift
+   ├── Notifications/          # Notification handling
+   └── [feature-name]/         # Each major feature in its own folder
+   ```
+
+2. **Views** - Split large views into components:
+   ```
+   Views/
+   ├── DeviceDetail/
+   │   ├── DeviceDetailView.swift      # Main coordinator view
+   │   ├── BatteryStatusView.swift     # Battery section
+   │   ├── ActivitySummaryView.swift   # Activity section
+   │   └── DeviceActionsView.swift     # Action buttons
+   ├── ActivityData/
+   │   └── [activity components]
+   └── [feature-name]/         # Each major screen in its own folder
+   ```
+
+3. **Bluetooth** - Split by responsibility:
+   ```
+   Bluetooth/
+   ├── Core/
+   │   ├── BluetoothManager.swift      # Main coordinator
+   │   ├── DeviceDiscovery.swift       # Scanning logic
+   │   └── ConnectionManager.swift     # Connection handling
+   ├── Characteristics/
+   │   └── CharacteristicOperations.swift
+   └── FossilConstants.swift
+   ```
+
+4. **Services** - High-level coordinators only:
+   ```
+   Services/
+   ├── WatchManager.swift              # Main watch coordinator
+   ├── DevicePersistence.swift         # Device storage
+   └── AutoReconnect.swift             # Reconnection logic
+   ```
+
+### File Size Guidelines
+- **Maximum 400 lines** per file (target: 200-300)
+- If a file exceeds 400 lines, extract logical components
+- Each file should have a single, clear responsibility
+- Use extensions in separate files for protocol conformance
+
+### Component Splitting Rules
+When splitting a large file:
+1. **Identify logical boundaries** - Look for distinct responsibilities
+2. **Extract state** - Separate state management from operations
+3. **Create protocols** - Define interfaces for communication
+4. **Maintain encapsulation** - Keep related functionality together
+5. **Update imports** - Ensure all files have correct import statements
+
+### Naming Conventions
+- **Folders**: Use PascalCase for feature folders (e.g., `FileTransfer/`, `DeviceDetail/`)
+- **Files**: Match the primary class/struct name (e.g., `FileTransferManager.swift`)
+- **Extensions**: Use descriptive names (e.g., `FileTransferManager+Encryption.swift`)
+
+### When Adding New Features
+1. **Create a feature directory** under the appropriate layer
+2. **One class/struct per file** (except small helper types)
+3. **Group related files** in the feature directory
+4. **Add README.md** in the feature folder if complex
+5. **Update documentation** to reference the new structure
