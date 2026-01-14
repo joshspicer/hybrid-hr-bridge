@@ -9,6 +9,8 @@ struct DeviceDetailView: View {
     @State private var showingAppInstall = false
     @State private var showingLogExport = false
     @State private var showingActivityData = false
+    @State private var showingHeartRate = false
+    @State private var showingAlarms = false
     @State private var statusMessage: String?
     @State private var isRefreshingBattery = false
     @State private var isRefreshingActivity = false
@@ -61,6 +63,8 @@ struct DeviceDetailView: View {
                 onUpdateTestTrack: updateTestTrack,
                 onSendMusicCommand: sendMusicCommand,
                 onExportLogs: { showingLogExport = true },
+                onHeartRate: { showingHeartRate = true },
+                onAlarms: { showingAlarms = true },
                 logSummary: logManager.getLogSummary()
             )
 
@@ -141,6 +145,32 @@ struct DeviceDetailView: View {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Close") {
                                 showingActivityData = false
+                            }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showingHeartRate) {
+            NavigationStack {
+                HeartRateView()
+                    .environmentObject(watchManager)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") {
+                                showingHeartRate = false
+                            }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showingAlarms) {
+            NavigationStack {
+                AlarmListView()
+                    .environmentObject(watchManager)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") {
+                                showingAlarms = false
                             }
                         }
                     }

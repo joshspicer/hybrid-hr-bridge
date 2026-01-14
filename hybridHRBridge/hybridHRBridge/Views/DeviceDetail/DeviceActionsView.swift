@@ -10,6 +10,8 @@ struct DeviceActionsView: View {
     let onUpdateTestTrack: () -> Void
     let onSendMusicCommand: (MusicControlManager.MusicCommand) -> Void
     let onExportLogs: () -> Void
+    let onHeartRate: () -> Void
+    let onAlarms: () -> Void
     let logSummary: String
 
     var body: some View {
@@ -30,6 +32,30 @@ struct DeviceActionsView: View {
                 }
             }
             .disabled(!isAuthenticated || isSyncingTime)
+            
+            // Heart Rate Monitor
+            Button {
+                onHeartRate()
+            } label: {
+                HStack {
+                    Image(systemName: "heart.fill")
+                        .frame(width: 30)
+                    Text("Heart Rate Monitor")
+                }
+            }
+            .disabled(!isAuthenticated)
+            
+            // Alarms
+            Button {
+                onAlarms()
+            } label: {
+                HStack {
+                    Image(systemName: "alarm")
+                        .frame(width: 30)
+                    Text("Alarms")
+                }
+            }
+            .disabled(!isAuthenticated)
 
             // Install App
             Button {
@@ -133,6 +159,8 @@ struct DeviceActionsView: View {
             onUpdateTestTrack: {},
             onSendMusicCommand: { _ in },
             onExportLogs: {},
+            onHeartRate: {},
+            onAlarms: {},
             logSummary: "100 entries"
         )
     }
