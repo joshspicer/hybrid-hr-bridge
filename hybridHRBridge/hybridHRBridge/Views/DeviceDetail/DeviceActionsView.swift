@@ -12,6 +12,7 @@ struct DeviceActionsView: View {
     let onExportLogs: () -> Void
     let onHeartRate: () -> Void
     let onAlarms: () -> Void
+    let onSettings: () -> Void
     let logSummary: String
 
     var body: some View {
@@ -144,6 +145,17 @@ struct DeviceActionsView: View {
                     }
                 }
             }
+            
+            // Settings
+            Button {
+                onSettings()
+            } label: {
+                HStack {
+                    Image(systemName: "gear")
+                        .frame(width: 30)
+                    Text("Settings")
+                }
+            }
         }
     }
 }
@@ -161,6 +173,7 @@ struct DeviceActionsView: View {
             onExportLogs: {},
             onHeartRate: {},
             onAlarms: {},
+            onSettings: {},
             logSummary: "100 entries"
         )
     }
