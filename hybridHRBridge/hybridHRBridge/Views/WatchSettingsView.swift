@@ -169,6 +169,17 @@ struct WatchSettingsView: View {
                 }
                 .foregroundColor(.secondary)
                 
+                NavigationLink {
+                    DeveloperToolsView()
+                        .environmentObject(watchManager)
+                } label: {
+                    HStack {
+                        Image(systemName: "wrench.and.screwdriver")
+                            .frame(width: 30)
+                        Text("Developer Tools")
+                    }
+                }
+                
                 Link(destination: URL(string: "https://github.com/joshspicer/hybrid-hr-bridge")!) {
                     HStack {
                         Image(systemName: "link")
