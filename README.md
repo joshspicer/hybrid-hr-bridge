@@ -1,8 +1,11 @@
+> [!WARNING]  
+> This project is very much a work in progress and may change rapidly! Contributions encouraged!
+
 # Hybrid HR Bridge
 
 iOS companion app for Fossil/Skagen Hybrid HR smartwatches, with the goal of replicating functionality from the discontinued official Fossil app.
 
-## Features
+## Feature Goals
 
 - Bluetooth Low Energy communication with Hybrid HR watches
 - AES-128 authentication using keys from Gadgetbridge
@@ -65,4 +68,6 @@ If you see "Authentication rejected by watch" errors, see the [Troubleshooting G
 
 ## License
 
-This project is for educational and interoperability purposes. The Fossil Hybrid HR protocol implementation is based on reverse-engineering work by the Gadgetbridge project.
+This project is for educational and interoperability purposes. The Fossil Hybrid HR protocol implementation is based on reverse-engineering work by the Gadgetbridge project.  
+
+This project is not affiliated with GadgetBridge or Fossil/Skagen.
